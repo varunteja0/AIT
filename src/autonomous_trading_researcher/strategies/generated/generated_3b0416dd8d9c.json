@@ -1,0 +1,23 @@
+{
+  "family": "generated",
+  "metrics": {
+    "max_drawdown": 0.0001634204850755605,
+    "profit_factor": 6.837613209052302,
+    "sharpe_ratio": 3.6229670127633904,
+    "sortino_ratio": 31.16113957813402,
+    "total_return": 0.0017155876839531903,
+    "win_rate": 0.36363636363636365
+  },
+  "parameters": {
+    "leverage": 1.0,
+    "primary_feature": "volatility",
+    "strategy_id": "generated_3b0416dd8d9c",
+    "symbol": "ETH/USDT",
+    "template": "feature_lt_short",
+    "threshold": 0.0033500222530270726
+  },
+  "score": 9.248398235009734,
+  "strategy_id": "generated_3b0416dd8d9c",
+  "strategy_name": "generated_3b0416dd8d9c",
+  "symbol": "ETH/USDT"
+}

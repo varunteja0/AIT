@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autonomous-ai-trading-researcher"
+version = "0.1.0"
+description = "Production-grade quantitative trading research platform for autonomous strategy discovery and deployment."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "ccxt>=4.4.80",
+  "fastapi>=0.115.0",
+  "numpy>=2.2.0",
+  "optuna>=4.2.0",
+  "pandas>=2.2.3",
+  "plotly>=6.0.0",
+  "pyarrow>=19.0.0",
+  "PyYAML>=6.0.2",
+  "uvicorn>=0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.15.0",
+  "pytest>=8.3.4",
+  "ruff>=0.9.10",
+]
+
+[project.scripts]
+atr = "autonomous_trading_researcher.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+autonomous_trading_researcher = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "S", "RUF"]
+ignore = ["S101", "S105"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+strict_optional = true
+pretty = true
+namespace_packages = true
+explicit_package_bases = true

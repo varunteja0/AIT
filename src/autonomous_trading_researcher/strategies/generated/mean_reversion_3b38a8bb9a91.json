@@ -1,0 +1,20 @@
+{
+  "family": "builtin",
+  "metrics": {
+    "max_drawdown": 0.0,
+    "profit_factor": 0.0,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "total_return": 0.0,
+    "win_rate": 0.0
+  },
+  "parameters": {
+    "leverage": 1.0,
+    "strategy_id": "mean_reversion_3b38a8bb9a91",
+    "z_score_threshold": 1.0
+  },
+  "score": 0.0,
+  "strategy_id": "mean_reversion_3b38a8bb9a91",
+  "strategy_name": "mean_reversion",
+  "symbol": "BTC/USDT"
+}

@@ -1,0 +1,2 @@
+"""Strategy abstractions and implementations."""
+

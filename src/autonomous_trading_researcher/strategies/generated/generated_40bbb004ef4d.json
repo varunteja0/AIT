@@ -1,0 +1,23 @@
+{
+  "family": "generated",
+  "metrics": {
+    "max_drawdown": 9.999999999998899e-05,
+    "profit_factor": 1.2231265554077941,
+    "sharpe_ratio": 0.793435866193144,
+    "sortino_ratio": 0.0,
+    "total_return": 2.23038229891781e-05,
+    "win_rate": 0.6666666666666666
+  },
+  "parameters": {
+    "leverage": 1.0,
+    "primary_feature": "slow_ma",
+    "strategy_id": "generated_40bbb004ef4d",
+    "symbol": "BTC/USDT",
+    "template": "feature_lt_short",
+    "threshold": 67423.87266666666
+  },
+  "score": 0.6349820145841059,
+  "strategy_id": "generated_40bbb004ef4d",
+  "strategy_name": "generated_40bbb004ef4d",
+  "symbol": "BTC/USDT"
+}

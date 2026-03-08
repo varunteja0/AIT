@@ -1,0 +1,20 @@
+{
+  "family": "builtin",
+  "metrics": {
+    "max_drawdown": 0.0,
+    "profit_factor": 0.0,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "total_return": 0.0,
+    "win_rate": 0.0
+  },
+  "parameters": {
+    "leverage": 0.5,
+    "lookback": 30,
+    "strategy_id": "breakout_ef171c508033"
+  },
+  "score": 0.0,
+  "strategy_id": "breakout_ef171c508033",
+  "strategy_name": "breakout",
+  "symbol": "BTC/USDT"
+}
