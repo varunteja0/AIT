@@ -10,6 +10,7 @@ import pandas as pd
 
 from autonomous_trading_researcher.backtesting.costs import CostModel
 from autonomous_trading_researcher.backtesting.metrics import compute_metrics
+from autonomous_trading_researcher.backtesting.rules import apply_position_rules
 from autonomous_trading_researcher.config import BacktestingConfig
 from autonomous_trading_researcher.core.models import BacktestResult
 from autonomous_trading_researcher.strategies.base import BaseStrategy
@@ -25,6 +26,7 @@ def _run_vectorized_backtest(
 
     frame = features.copy()
     target_exposure = strategy.target_exposure(frame) * config.position_size
+    target_exposure = apply_position_rules(frame, target_exposure, strategy.parameters)
     lagged_exposure = target_exposure.shift(1).fillna(0.0)
     market_returns = frame["close"].pct_change().fillna(0.0)
     turnover = target_exposure.diff().abs().fillna(abs(target_exposure))

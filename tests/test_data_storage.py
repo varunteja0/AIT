@@ -87,3 +87,45 @@ def test_storage_deduplicates_and_filters_by_time_range(tmp_path) -> None:
     assert len(storage.read_dataset("trades", "binance", "BTC/USDT")) == 6
     assert len(filtered) == 3
     assert integrity["duplicate_rows"] == 0
+
+
+def test_dataset_builder_creates_multi_resolution_bars(tmp_path) -> None:
+    """The dataset builder should emit aligned datasets across configured timeframes."""
+
+    storage = ParquetDataLake(tmp_path / "lake")
+    timestamp = pd.Timestamp("2024-01-01T00:00:00Z")
+    trades = [
+        Trade(
+            exchange_id="binance",
+            symbol="BTC/USDT",
+            timestamp=(timestamp + timedelta(seconds=offset)).to_pydatetime(),
+            price=100 + (offset * 0.1),
+            amount=1.0 + (offset * 0.01),
+            side="buy" if offset % 2 == 0 else "sell",
+            trade_id=str(offset),
+        )
+        for offset in range(30)
+    ]
+    books = [
+        OrderBookSnapshot(
+            exchange_id="binance",
+            symbol="BTC/USDT",
+            timestamp=(timestamp + timedelta(seconds=offset)).to_pydatetime(),
+            bids=[(99.9 + offset * 0.1, 5.0 + offset)],
+            asks=[(100.1 + offset * 0.1, 4.0 + offset)],
+        )
+        for offset in range(30)
+    ]
+    storage.write_trades(trades)
+    storage.write_order_books(books)
+
+    builder = HistoricalDatasetBuilder()
+    datasets = builder.build_multi_resolution_datasets(
+        storage.read_dataset("trades", "binance", "BTC/USDT"),
+        storage.read_dataset("order_books", "binance", "BTC/USDT"),
+        timeframes=["1s", "5s", "1min"],
+    )
+
+    assert set(datasets) == {"1s", "5s", "1min"}
+    assert datasets["1s"].index.is_monotonic_increasing
+    assert {"open", "close", "best_bid", "best_ask"}.issubset(datasets["5s"].columns)

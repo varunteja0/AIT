@@ -46,4 +46,5 @@ def test_autonomous_research_loop_runs_end_to_end(app_config, synthetic_market_d
     assert result["candidate_count"] > 0
     assert result["best_candidate"] is not None
     assert loop.deployed_candidate is not None
+    assert len(loop.deployed_candidates) >= 1
     assert result["monitoring"].system_healthy is True
