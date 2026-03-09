@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Logo_AIT.png">
+</p>
+
 # Autonomous AI Trading Researcher
 
 Autonomous AI Trading Researcher is a modular quantitative trading research platform built to discover, validate, rank, and safely deploy systematic trading strategies.
