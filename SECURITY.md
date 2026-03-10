@@ -23,7 +23,7 @@ Do NOT create a public issue for security vulnerabilities.
 
 Instead contact:
 
-varunteja.chunduri@gmail.com
+varuntejahit@gmail.com
 
 We will investigate and respond as soon as possible.
 
