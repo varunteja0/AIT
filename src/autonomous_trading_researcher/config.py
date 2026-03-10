@@ -26,9 +26,14 @@ class DataConfig:
     data_dir: str = "data/lake"
     trade_poll_interval_seconds: int = 15
     order_book_poll_interval_seconds: int = 5
+    orderbook_interval_seconds: int = 5
     order_book_depth: int = 10
     ohlcv_timeframe: str = "5min"
     trade_fetch_limit: int = 200
+    max_trade_batches_per_cycle: int = 10
+    checkpoint_path: str = "data/checkpoints/collector_state.json"
+    resume_from_checkpoint: bool = True
+    backfill_start: str | None = None
 
 
 @dataclass(slots=True)
@@ -41,6 +46,8 @@ class FeatureEngineeringConfig:
     slow_ma_window: int = 30
     momentum_window: int = 12
     liquidity_window: int = 15
+    vwap_window: int = 20
+    timeframes: list[str] = field(default_factory=lambda: ["1s", "5s", "1min", "5min"])
 
 
 @dataclass(slots=True)
@@ -81,6 +88,9 @@ class ResearchConfig:
     validate_top_n: int = 5
     generated_strategy_dir: str = "src/autonomous_trading_researcher/strategies/generated"
     experiment_db_path: str = "data/experiments.db"
+    optuna_storage_path: str = "data/optuna_studies.db"
+    candidates: int = 2000
+    generations: int = 50
     strategy_parameter_space: dict[str, dict[str, list[float | int | str]]] = field(
         default_factory=dict
     )
@@ -94,6 +104,8 @@ class RiskConfig:
     max_portfolio_exposure: float = 1.0
     max_daily_loss: float = 0.03
     max_drawdown: float = 0.12
+    target_volatility: float = 0.15
+    kelly_fraction_cap: float = 0.5
 
 
 @dataclass(slots=True)
@@ -102,10 +114,15 @@ class ExecutionConfig:
 
     enabled: bool = False
     paper_trading: bool = True
+    mode: str = "paper"
     exchange_id: str = "binance"
     sandbox: bool = False
     api_key_env: str = "ATR_EXCHANGE_API_KEY"
     api_secret_env: str = "ATR_EXCHANGE_API_SECRET"
+    ensemble_size: int = 10
+    paper_slippage_bps: float = 5.0
+    paper_fee_rate: float = 0.0005
+    paper_latency_ms: int = 50
 
 
 @dataclass(slots=True)
@@ -128,6 +145,17 @@ class UIConfig:
 
 
 @dataclass(slots=True)
+class ValidationConfig:
+    """Statistical validation thresholds for deployable strategies."""
+
+    min_sharpe: float = 1.0
+    min_sortino: float = 0.5
+    min_profit_factor: float = 1.0
+    max_drawdown: float = 0.25
+    min_alpha_t_stat: float = 0.0
+
+
+@dataclass(slots=True)
 class AppConfig:
     """Top-level application configuration."""
 
@@ -140,6 +168,7 @@ class AppConfig:
     execution: ExecutionConfig
     monitoring: MonitoringConfig
     ui: UIConfig = field(default_factory=UIConfig)
+    validation: ValidationConfig = field(default_factory=ValidationConfig)
 
 
 def _build_dataclass(dataclass_type: type[Any], payload: dict[str, Any] | None) -> Any:
@@ -171,4 +200,5 @@ def load_config(path: str | Path) -> AppConfig:
         execution=_build_dataclass(ExecutionConfig, raw_payload.get("execution")),
         monitoring=_build_dataclass(MonitoringConfig, raw_payload.get("monitoring")),
         ui=_build_dataclass(UIConfig, raw_payload.get("ui")),
+        validation=_build_dataclass(ValidationConfig, raw_payload.get("validation")),
     )

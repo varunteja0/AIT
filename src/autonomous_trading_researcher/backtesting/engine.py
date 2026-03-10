@@ -8,6 +8,7 @@ import pandas as pd
 
 from autonomous_trading_researcher.backtesting.costs import CostModel
 from autonomous_trading_researcher.backtesting.metrics import compute_metrics
+from autonomous_trading_researcher.backtesting.rules import apply_position_rules
 from autonomous_trading_researcher.config import BacktestingConfig
 from autonomous_trading_researcher.core.models import BacktestResult
 from autonomous_trading_researcher.strategies.base import BaseStrategy
@@ -66,6 +67,7 @@ class EventDrivenBacktestEngine:
         """Run an event-driven backtest over sequential bars."""
 
         target_exposures = strategy.target_exposure(features) * self.config.position_size
+        target_exposures = apply_position_rules(features, target_exposures, strategy.parameters)
         execution_targets = target_exposures.shift(1).fillna(0.0)
         cash = self.config.starting_cash
         accounting = PositionAccounting()
