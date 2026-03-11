@@ -74,6 +74,12 @@ class MonitoringService:
         top_features: list[str] | None = None,
         active_strategy: str | None = None,
         feature_correlations: dict[str, dict[str, float]] | None = None,
+        equity_curve: list[float] | None = None,
+        drawdown_curve: list[float] | None = None,
+        portfolio_allocation: dict[str, float] | None = None,
+        sharpe_ratio: float = 0.0,
+        win_rate: float = 0.0,
+        trade_count: int = 0,
     ) -> MonitoringSnapshot:
         """Create a monitoring payload for logs and external sinks."""
 
@@ -97,6 +103,12 @@ class MonitoringService:
                 "top_features": top_features or [],
                 "active_strategy": active_strategy,
                 "feature_correlations": feature_correlations or {},
+                "equity_curve": equity_curve or [],
+                "drawdown_curve": drawdown_curve or [],
+                "portfolio_allocation": portfolio_allocation or {},
+                "sharpe_ratio": sharpe_ratio,
+                "win_rate": win_rate,
+                "trade_count": trade_count,
             },
         )
         self.status_path.write_text(json.dumps(asdict(snapshot), default=str), encoding="utf-8")
@@ -108,6 +120,9 @@ class MonitoringService:
                 "number_of_strategies_tested": number_of_strategies_tested,
                 "best_strategy_score": best_strategy_score,
                 "active_strategy": active_strategy,
+                "sharpe_ratio": sharpe_ratio,
+                "win_rate": win_rate,
+                "trade_count": trade_count,
             },
         )
         LOGGER.info(
@@ -121,6 +136,9 @@ class MonitoringService:
                 "deployed_strategy": deployed_strategy,
                 "number_of_strategies_tested": number_of_strategies_tested,
                 "best_strategy_score": best_strategy_score,
+                "sharpe_ratio": sharpe_ratio,
+                "win_rate": win_rate,
+                "trade_count": trade_count,
             },
         )
         return snapshot

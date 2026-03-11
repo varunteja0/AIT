@@ -1,13 +1,52 @@
-.venv/
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
 .pytest_cache/
+
+# Type checking
 .mypy_cache/
+
+# Linting
 .ruff_cache/
+
+# Build artifacts
 build/
 dist/
 *.egg-info/
-*.pyc
+
+# Environment variables
 .env
+
+# Data directories
 data/
+dataset/
+datasets/
+
+# Parquet datasets
+*.parquet
+
+# Logs
 logs/
 
+# Checkpoints
+checkpoints/
+
+# Optuna studies
+*.db
+*.sqlite
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

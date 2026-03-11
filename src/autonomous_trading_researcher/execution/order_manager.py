@@ -57,6 +57,7 @@ class ExecutionService:
             return
         signed_quantity = result.filled if result.side.value == "BUY" else -result.filled
         execution_price = float(result.average_price or market_price)
+        transaction_cost = float(result.raw.get("transaction_cost", 0.0))
         position = portfolio_state.positions.get(result.symbol, Position(symbol=result.symbol))
         new_quantity = position.quantity + signed_quantity
         if new_quantity == 0:
@@ -72,6 +73,8 @@ class ExecutionService:
         position.market_price = market_price
         portfolio_state.positions[result.symbol] = position
         portfolio_state.cash -= signed_quantity * execution_price
+        portfolio_state.cash -= transaction_cost
+        portfolio_state.realized_pnl -= transaction_cost
         portfolio_state.unrealized_pnl = sum(
             (pos.market_price - pos.average_price) * pos.quantity
             for pos in portfolio_state.positions.values()

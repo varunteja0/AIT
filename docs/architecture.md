@@ -6,9 +6,13 @@ The repository is organized as an autonomous quantitative research laboratory wi
 
 - `data`: CCXT ingestion, parquet storage, and historical dataset construction.
 - `features`: classical indicators plus market microstructure features.
+- `features/feature_sets`: feature set versioning and persistence.
 - `strategies`: built-in strategies, generated strategy persistence, and registry loading.
 - `backtesting`: event-driven simulation, vectorized simulation, and parallel batch execution.
 - `research`: strategy generation, large-scale discovery, Bayesian optimization, genetic evolution, and experiment tracking.
+- `core/regimes`: regime detection and labeling utilities.
+- `core/portfolio`: portfolio allocation and correlation-aware weighting.
+- `infra/distributed`: distributed execution backends for batch evaluation.
 - `risk`: portfolio limits and trading halts.
 - `execution`: paper trading and `ccxt` execution services.
 - `monitoring`: state snapshots, event logs, and dashboard-facing status persistence.
@@ -18,15 +22,18 @@ The repository is organized as an autonomous quantitative research laboratory wi
 ## Data pipeline
 
 1. Exchange trades and order book snapshots are collected through `MarketDataCollector`.
-2. Raw events are stored in parquet partitions in the data lake.
-3. The parquet layer validates required schema, normalizes timestamps to UTC, deduplicates overlapping incremental batches, and supports filtered historical reads for incremental research jobs.
-3. `HistoricalDatasetBuilder` aggregates trades into OHLCV bars and enriches them with:
+2. The collector supports historical pagination, per-symbol `since` checkpoints, checkpoint persistence, and automatic resume from prior parquet state.
+3. Raw events are stored in parquet partitions by dataset, exchange, symbol, and date in the data lake.
+4. The parquet layer validates required schema, normalizes timestamps to UTC, deduplicates overlapping incremental batches, and supports filtered historical reads for incremental research jobs.
+5. `HistoricalDatasetBuilder` aggregates trades into OHLCV bars and enriches them with:
    - buy and sell volume
    - trade count
    - top-of-book prices
    - top-of-book depth
-4. Bar datasets are aligned to the configured timeframe so downstream feature and backtest logic sees a consistent time grid.
-5. `FeaturePipeline` computes both traditional indicators and microstructure signals.
+6. Multi-resolution datasets are built for `1s`, `5s`, `1m`, and `5m` bars with UTC-normalized, deduplicated, gap-filled indexes.
+7. Versioned datasets are persisted under `data/datasets/<version>/<exchange>/<symbol>/<timeframe>/<date>.parquet` with a manifest per version.
+8. `FeaturePipeline` computes both traditional indicators and microstructure signals.
+9. Feature sets are versioned independently under `data/feature_sets` and linked to dataset versions.
 
 ## Feature engine
 
@@ -43,8 +50,11 @@ The feature engine combines classic quantitative features with market microstruc
 - volume delta
 - spread
 - order flow imbalance
+- VWAP distance
+- order book slope
+- liquidity pressure
 
-Features are assembled through an ordered registry, which keeps the pipeline extensible without hard-coding every new signal into one method. This keeps generated strategy research and traditional strategies on the same feature surface.
+Features are assembled through an ordered registry, which keeps the pipeline extensible without hard-coding every new signal into one method. The pipeline now also performs multi-timeframe alignment so the anchor timeframe carries unsuffixed features while higher and lower timeframe features are exposed as suffixed columns such as `momentum_1s`, `volatility_1m`, and `vwap_distance_5m`.
 
 ## Strategy discovery engine
 
@@ -54,7 +64,9 @@ Discovery now spans three families:
 2. Generated feature-rule strategies built from thousands of random feature combinations.
 3. Microstructure-aware generated strategies emphasizing order flow, imbalance, and queue dynamics.
 
-Discovery evaluates large populations in parallel with the vectorized backtester, validates shortlisted winners with the event-driven backtester, runs walk-forward out-of-sample checks on the best candidates, persists experiments to SQLite, and saves the best deployable strategies under `strategies/generated/`.
+Discovery evaluates large populations in parallel with the vectorized backtester, validates shortlisted winners with the event-driven backtester, runs walk-forward out-of-sample checks on the best candidates, applies statistical acceptance thresholds, persists experiments to SQLite, persists Optuna studies to SQLite, and saves the best deployable strategies under `strategies/generated/`.
+
+Experiment runs are recorded separately from per-strategy results, allowing the dashboard to track dataset and feature-set versions per research cycle.
 
 ## Backtesting and validation
 
@@ -64,6 +76,8 @@ Two complementary simulation paths are used:
 - the event-driven engine for sequential validation with next-bar execution semantics
 
 The event-driven validator now lags exposures by one bar to avoid lookahead bias. Shortlisted strategies also pass through walk-forward validation using expanding train/test windows before final ranking.
+
+Backtesting also respects strategy-level position rules such as `holding_period`, `stop_loss`, and `take_profit`, which are used by both generated strategies and Bayesian search.
 
 ## Genetic evolution engine
 
@@ -78,14 +92,43 @@ The event-driven validator now lags exposures by one bar to avoid lookahead bias
 
 The result is a higher-quality generated strategy population that can be re-ranked and deployed automatically.
 
+## Statistical validation
+
+Deployable strategies pass an explicit statistical screen:
+
+- Sharpe ratio floor
+- Sortino ratio floor
+- profit factor floor
+- maximum drawdown ceiling
+- t-statistic of mean alpha
+
+This prevents the deployment path from treating walk-forward completion alone as sufficient evidence.
+
 ## Execution system
 
 Execution remains risk-gated:
 
 - paper trading is the default deployment mode
 - live execution uses `ccxt`
-- the risk manager enforces projected position size, projected exposure, daily loss, and drawdown limits before order submission
+- the paper broker simulates latency, slippage, and transaction costs
+- the risk manager enforces projected position size, projected exposure, daily loss, drawdown, volatility targeting, and Kelly-bounded sizing before order submission
+- an ensemble engine selects the top validated strategies and combines their signals with weighted voting
 - the execution layer updates local portfolio state after fills
+- a portfolio allocator computes correlation-aware weights and symbol-level allocation targets
+
+## Autonomous loop
+
+The orchestration layer now supports both single-cycle and continuous operation. Each cycle performs:
+
+1. data collection and checkpoint advancement
+2. multi-resolution dataset construction
+3. multi-timeframe feature generation
+4. large-scale discovery and Optuna refinement
+5. walk-forward and statistical validation
+6. ensemble selection and paper or live deployment
+7. monitoring snapshot emission and event logging
+
+When new cycles replace prior ensemble members, the old strategies are retired automatically and logged as such.
 
 ## UI dashboard
 
@@ -95,6 +138,10 @@ The FastAPI dashboard exposes:
 - `/api/top_strategies`
 - `/api/system_status`
 - `/api/metrics`
+- `/api/experiments`
+- `/api/knowledge/features`
+- `/api/knowledge/strategies`
+- `/api/knowledge/graph`
 
 The UI renders:
 
@@ -103,7 +150,14 @@ The UI renders:
 - top-ranked strategies
 - equity curve
 - drawdown
+- Sharpe ratio
+- win rate
+- trade count
 - feature importance
 - feature correlation heatmap
 - optimization scatter plots
 - recent event-log entries
+- experiment performance over time
+- strategy network visualization
+- regime heatmap
+- portfolio allocation breakdown

@@ -124,11 +124,18 @@ data:
     - BTC/USDT
     - ETH/USDT
   data_dir: data/lake
+  dataset_dir: null
+  dataset_versioning_enabled: true
   trade_poll_interval_seconds: 3
   order_book_poll_interval_seconds: 5
+  orderbook_interval_seconds: 5
   order_book_depth: 10
   ohlcv_timeframe: 1min
   trade_fetch_limit: 5000
+  max_trade_batches_per_cycle: 50
+  checkpoint_path: data/checkpoints/collector_state.json
+  resume_from_checkpoint: true
+  backfill_start: null
 
 feature_engineering:
   returns_window: 1
@@ -137,6 +144,10 @@ feature_engineering:
   slow_ma_window: 15
   momentum_window: 6
   liquidity_window: 10
+  vwap_window: 20
+  timeframes: [1s, 5s, 1min, 5min]
+  feature_set_dir: null
+  feature_set_enabled: true
 
 backtesting:
   starting_cash: 100000.0
@@ -169,6 +180,8 @@ research:
 
   generated_strategy_count: 3000
   generated_strategy_seed: 17
+  candidates: 2000
+  generations: 50
 
   max_parallel_workers: 8
 
@@ -177,6 +190,11 @@ research:
 
   generated_strategy_dir: src/autonomous_trading_researcher/strategies/generated
   experiment_db_path: data/experiments.db
+  optuna_storage_path: data/optuna_studies.db
+  execution_backend: local
+  ray_address: null
+  ray_namespace: atr
+  enable_research_agent: true
 
   strategy_parameter_space:
 
@@ -196,15 +214,22 @@ risk:
   max_position_size: 0.25
   max_portfolio_exposure: 1.0
   max_daily_loss: 0.03
-  max_drawdown: 0.12
+  max_drawdown: 0.2
+  target_volatility: 0.15
+  kelly_fraction_cap: 0.5
 
 execution:
   enabled: false
   paper_trading: true
+  mode: paper
   exchange_id: binance
   sandbox: false
   api_key_env: ATR_EXCHANGE_API_KEY
   api_secret_env: ATR_EXCHANGE_API_SECRET
+  ensemble_size: 10
+  paper_slippage_bps: 5.0
+  paper_fee_rate: 0.0005
+  paper_latency_ms: 50
 
 monitoring:
   heartbeat_seconds: 30
@@ -216,3 +241,17 @@ ui:
   host: 0.0.0.0
   port: 8000
   refresh_seconds: 10
+
+validation:
+  min_sharpe: 1.0
+  min_sortino: 0.5
+  min_profit_factor: 1.0
+
+regimes:
+  window: 50
+  trend_threshold: 0.6
+  mean_reversion_threshold: -0.15
+  volatility_expansion_threshold: 1.5
+  low_liquidity_quantile: 0.2
+  max_drawdown: 0.25
+  min_alpha_t_stat: 0.0

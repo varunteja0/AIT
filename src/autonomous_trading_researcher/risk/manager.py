@@ -124,3 +124,40 @@ class RiskManager:
         )
         if projected_exposure > self.limits.max_portfolio_exposure:
             raise RiskLimitBreachError("max_portfolio_exposure")
+
+    def volatility_target_multiplier(self, realized_volatility: float) -> float:
+        """Return a volatility-targeting multiplier."""
+
+        if realized_volatility <= 0.0:
+            return 1.0
+        return min(1.0, self.limits.target_volatility / realized_volatility)
+
+    def kelly_fraction(
+        self,
+        win_rate: float,
+        profit_factor: float,
+    ) -> float:
+        """Estimate a bounded Kelly fraction from win rate and payoff quality."""
+
+        if win_rate <= 0.0 or profit_factor <= 0.0:
+            return 0.0
+        loss_rate = max(1.0 - win_rate, 1e-9)
+        payoff_ratio = max(profit_factor * loss_rate / max(win_rate, 1e-9), 1e-9)
+        kelly = win_rate - (loss_rate / payoff_ratio)
+        return max(0.0, min(self.limits.kelly_fraction_cap, kelly))
+
+    def recommended_position_fraction(
+        self,
+        base_fraction: float,
+        realized_volatility: float,
+        win_rate: float,
+        profit_factor: float,
+    ) -> float:
+        """Return a risk-shaped target fraction for a candidate deployment."""
+
+        volatility_multiplier = self.volatility_target_multiplier(realized_volatility)
+        kelly_multiplier = self.kelly_fraction(win_rate, profit_factor)
+        if kelly_multiplier == 0.0:
+            return 0.0
+        target_fraction = base_fraction * volatility_multiplier * kelly_multiplier
+        return min(self.limits.max_position_size, max(0.0, target_fraction))

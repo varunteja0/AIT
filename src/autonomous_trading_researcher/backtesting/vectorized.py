@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import multiprocessing
 from collections.abc import Sequence
-from concurrent.futures import ProcessPoolExecutor
 
 import pandas as pd
 
 from autonomous_trading_researcher.backtesting.costs import CostModel
 from autonomous_trading_researcher.backtesting.metrics import compute_metrics
+from autonomous_trading_researcher.backtesting.rules import apply_position_rules
 from autonomous_trading_researcher.config import BacktestingConfig
 from autonomous_trading_researcher.core.models import BacktestResult
+from autonomous_trading_researcher.infra.distributed.backends import (
+    ExecutionBackend,
+    LocalExecutionBackend,
+)
 from autonomous_trading_researcher.strategies.base import BaseStrategy
 
 
@@ -25,6 +28,7 @@ def _run_vectorized_backtest(
 
     frame = features.copy()
     target_exposure = strategy.target_exposure(frame) * config.position_size
+    target_exposure = apply_position_rules(frame, target_exposure, strategy.parameters)
     lagged_exposure = target_exposure.shift(1).fillna(0.0)
     market_returns = frame["close"].pct_change().fillna(0.0)
     turnover = target_exposure.diff().abs().fillna(abs(target_exposure))
@@ -92,26 +96,13 @@ class VectorizedBacktestEngine:
         strategies: Sequence[BaseStrategy],
         symbol: str,
         max_workers: int = 1,
+        backend: ExecutionBackend | None = None,
     ) -> list[BacktestResult]:
         """Run many vectorized backtests, optionally in parallel."""
 
         strategy_population = list(strategies)
         if not strategy_population:
             return []
-        if max_workers <= 1 or len(strategy_population) <= 1:
-            return [self.run(features, strategy, symbol) for strategy in strategy_population]
-        with ProcessPoolExecutor(
-            max_workers=max_workers,
-            mp_context=multiprocessing.get_context("spawn"),
-        ) as executor:
-            futures = [
-                executor.submit(
-                    _run_vectorized_backtest,
-                    self.config,
-                    features,
-                    strategy,
-                    symbol,
-                )
-                for strategy in strategy_population
-            ]
-            return [future.result() for future in futures]
+        executor_backend = backend or LocalExecutionBackend(max_workers=max_workers)
+        payload = [(self.config, features, strategy, symbol) for strategy in strategy_population]
+        return executor_backend.map(_run_vectorized_backtest, payload)

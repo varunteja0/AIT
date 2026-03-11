@@ -106,8 +106,7 @@ def _momentum(frame: pd.DataFrame, config: FeatureEngineeringConfig) -> pd.Serie
 def _microstructure(frame: pd.DataFrame, config: FeatureEngineeringConfig) -> pd.DataFrame:
     """Build microstructure signals from trade and order book fields."""
 
-    del config
-    return build_microstructure_features(frame)
+    return build_microstructure_features(frame, vwap_window=config.vwap_window)
 
 
 def _order_book_imbalance(
