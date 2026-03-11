@@ -1,0 +1,31 @@
+{
+  "family": "generated",
+  "metrics": {
+    "max_drawdown": 0.0,
+    "profit_factor": 0.0,
+    "sharpe_ratio": 0.0,
+    "sortino_ratio": 0.0,
+    "total_return": 0.0,
+    "win_rate": 0.0
+  },
+  "parameters": {
+    "dataset_version": "ds-20260310T192436Z-3614d8a97eb7",
+    "experiment_id": "exp-20260310T192436Z-BTC-USDT",
+    "feature_set_id": "fs-20260310T192436Z-55af3f0fce1b",
+    "holding_period": 3,
+    "leverage": 0.5,
+    "regime_labels": [],
+    "regime_metrics": {},
+    "secondary_threshold": 0.6176077476910632,
+    "stop_loss": 0.005,
+    "strategy_id": "generated_48823d941aa1",
+    "symbol": "BTC/USDT",
+    "take_profit": 0.01,
+    "template": "microstructure_reversal",
+    "threshold": 0.7998194549707099
+  },
+  "score": 0.0,
+  "strategy_id": "generated_48823d941aa1",
+  "strategy_name": "generated_48823d941aa1",
+  "symbol": "BTC/USDT"
+}

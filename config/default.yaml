@@ -124,6 +124,8 @@ data:
     - BTC/USDT
     - ETH/USDT
   data_dir: data/lake
+  dataset_dir: null
+  dataset_versioning_enabled: true
   trade_poll_interval_seconds: 3
   order_book_poll_interval_seconds: 5
   orderbook_interval_seconds: 5
@@ -144,6 +146,8 @@ feature_engineering:
   liquidity_window: 10
   vwap_window: 20
   timeframes: [1s, 5s, 1min, 5min]
+  feature_set_dir: null
+  feature_set_enabled: true
 
 backtesting:
   starting_cash: 100000.0
@@ -187,6 +191,10 @@ research:
   generated_strategy_dir: src/autonomous_trading_researcher/strategies/generated
   experiment_db_path: data/experiments.db
   optuna_storage_path: data/optuna_studies.db
+  execution_backend: local
+  ray_address: null
+  ray_namespace: atr
+  enable_research_agent: true
 
   strategy_parameter_space:
 
@@ -238,5 +246,12 @@ validation:
   min_sharpe: 1.0
   min_sortino: 0.5
   min_profit_factor: 1.0
+
+regimes:
+  window: 50
+  trend_threshold: 0.6
+  mean_reversion_threshold: -0.15
+  volatility_expansion_threshold: 1.5
+  low_liquidity_quantile: 0.2
   max_drawdown: 0.25
   min_alpha_t_stat: 0.0

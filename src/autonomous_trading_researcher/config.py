@@ -24,6 +24,8 @@ class DataConfig:
     exchange_id: str
     symbols: list[str]
     data_dir: str = "data/lake"
+    dataset_dir: str | None = None
+    dataset_versioning_enabled: bool = True
     trade_poll_interval_seconds: int = 15
     order_book_poll_interval_seconds: int = 5
     orderbook_interval_seconds: int = 5
@@ -48,6 +50,8 @@ class FeatureEngineeringConfig:
     liquidity_window: int = 15
     vwap_window: int = 20
     timeframes: list[str] = field(default_factory=lambda: ["1s", "5s", "1min", "5min"])
+    feature_set_dir: str | None = None
+    feature_set_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -91,6 +95,10 @@ class ResearchConfig:
     optuna_storage_path: str = "data/optuna_studies.db"
     candidates: int = 2000
     generations: int = 50
+    execution_backend: str = "local"
+    ray_address: str | None = None
+    ray_namespace: str = "atr"
+    enable_research_agent: bool = True
     strategy_parameter_space: dict[str, dict[str, list[float | int | str]]] = field(
         default_factory=dict
     )
@@ -156,6 +164,17 @@ class ValidationConfig:
 
 
 @dataclass(slots=True)
+class RegimeConfig:
+    """Regime detection thresholds."""
+
+    window: int = 50
+    trend_threshold: float = 0.6
+    mean_reversion_threshold: float = -0.15
+    volatility_expansion_threshold: float = 1.5
+    low_liquidity_quantile: float = 0.2
+
+
+@dataclass(slots=True)
 class AppConfig:
     """Top-level application configuration."""
 
@@ -169,6 +188,7 @@ class AppConfig:
     monitoring: MonitoringConfig
     ui: UIConfig = field(default_factory=UIConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
+    regimes: RegimeConfig = field(default_factory=RegimeConfig)
 
 
 def _build_dataclass(dataclass_type: type[Any], payload: dict[str, Any] | None) -> Any:
@@ -201,4 +221,5 @@ def load_config(path: str | Path) -> AppConfig:
         monitoring=_build_dataclass(MonitoringConfig, raw_payload.get("monitoring")),
         ui=_build_dataclass(UIConfig, raw_payload.get("ui")),
         validation=_build_dataclass(ValidationConfig, raw_payload.get("validation")),
+        regimes=_build_dataclass(RegimeConfig, raw_payload.get("regimes")),
     )

@@ -11,6 +11,8 @@ from autonomous_trading_researcher.backtesting.validation import WalkForwardVali
 from autonomous_trading_researcher.backtesting.vectorized import VectorizedBacktestEngine
 from autonomous_trading_researcher.config import ResearchConfig, ValidationConfig
 from autonomous_trading_researcher.core.models import StrategyCandidate
+from autonomous_trading_researcher.infra.distributed.backends import ExecutionBackend
+from autonomous_trading_researcher.research.agent import ResearchAgent
 from autonomous_trading_researcher.research.experiment_db import ExperimentDatabase
 from autonomous_trading_researcher.research.generator import iter_parameter_grid
 from autonomous_trading_researcher.research.genetic_evolution import (
@@ -25,11 +27,19 @@ from autonomous_trading_researcher.research.strategy_generator import (
 from autonomous_trading_researcher.strategies.generated.loader import save_strategy_payload
 from autonomous_trading_researcher.strategies.registry import BUILTIN_STRATEGIES, get_strategy
 
-CandidateKey = tuple[str, tuple[tuple[str, float | int | str], ...]]
+CandidateKey = tuple[str, tuple[tuple[str, object], ...]]
 
 
 class StrategyDiscoveryService:
     """Discover and validate strategy candidates for a single symbol dataset."""
+
+    _CONTEXT_KEYS = {
+        "dataset_version",
+        "feature_set_id",
+        "experiment_id",
+        "regime_labels",
+        "regime_metrics",
+    }
 
     def __init__(
         self,
@@ -37,11 +47,14 @@ class StrategyDiscoveryService:
         validation_config: ValidationConfig,
         vectorized_backtester: VectorizedBacktestEngine,
         event_driven_backtester: EventDrivenBacktestEngine,
+        execution_backend: ExecutionBackend | None = None,
+        research_agent: ResearchAgent | None = None,
     ) -> None:
         self.config = config
         self.validation_config = validation_config
         self.vectorized_backtester = vectorized_backtester
         self.event_driven_backtester = event_driven_backtester
+        self.execution_backend = execution_backend
         self.ranker = CandidateRanker(config.ranking_weights)
         self.bayesian = BayesianOptimizer(storage_path=config.optuna_storage_path)
         self.generator = MassiveStrategyGenerator(seed=config.generated_strategy_seed)
@@ -59,9 +72,15 @@ class StrategyDiscoveryService:
             population_size=config.genetic_population,
             generations=self.generation_count,
             max_workers=config.max_parallel_workers,
+            execution_backend=execution_backend,
         )
         self.experiment_db = ExperimentDatabase(config.experiment_db_path)
         self.generated_strategy_dir = Path(config.generated_strategy_dir)
+        self.research_agent = (
+            research_agent if research_agent is not None and config.enable_research_agent else None
+        )
+        if self.research_agent is None and config.enable_research_agent:
+            self.research_agent = ResearchAgent(self.experiment_db)
 
     def _evaluate(
         self,
@@ -94,6 +113,7 @@ class StrategyDiscoveryService:
             strategies,
             symbol=symbol,
             max_workers=self.config.max_parallel_workers,
+            backend=self.execution_backend,
         )
         return [
             StrategyCandidate(
@@ -193,13 +213,73 @@ class StrategyDiscoveryService:
         )
         return raw_candidates + evolved_candidates
 
+    def _agent_candidates(self, symbol: str, features) -> list[StrategyCandidate]:
+        """Generate candidates suggested by the research agent."""
+
+        if self.research_agent is None:
+            return []
+        strategies = self.research_agent.propose_strategies(
+            features=features,
+            symbol=symbol,
+        )
+        if not strategies:
+            return []
+        return self._evaluate_batch(symbol, features, strategies)
+
+    def _apply_context(
+        self,
+        candidates: list[StrategyCandidate],
+        *,
+        dataset_version: str | None,
+        feature_set_id: str | None,
+        experiment_id: str | None,
+        regime_labels: list[str] | None,
+        regime_metrics: dict[str, dict[str, float]] | None,
+    ) -> list[StrategyCandidate]:
+        for candidate in candidates:
+            candidate.parameters.update(
+                {
+                    key: value
+                    for key, value in {
+                        "dataset_version": dataset_version,
+                        "feature_set_id": feature_set_id,
+                        "experiment_id": experiment_id,
+                        "regime_labels": regime_labels,
+                        "regime_metrics": regime_metrics,
+                    }.items()
+                    if value is not None
+                }
+            )
+        return candidates
+
+    def _strategy_id_payload(self, candidate: StrategyCandidate) -> dict[str, float | int | str]:
+        return {
+            key: value
+            for key, value in candidate.parameters.items()
+            if key not in self._CONTEXT_KEYS
+        }
+
+    def _dedup_key(self, candidate: StrategyCandidate) -> CandidateKey:
+        """Build a hashable key for candidate deduplication."""
+
+        payload = []
+        for key, value in self._strategy_id_payload(candidate).items():
+            if isinstance(value, list):
+                normalized: float | int | str | tuple = tuple(value)
+            elif isinstance(value, dict):
+                normalized = tuple(sorted(value.items()))
+            else:
+                normalized = value
+            payload.append((key, normalized))
+        return (candidate.strategy_name, tuple(sorted(payload)))
+
     def _persist_top_candidates(self, candidates: list[StrategyCandidate]) -> None:
         """Persist top strategies to disk and the experiment database."""
 
         for candidate in candidates:
             strategy_id = str(candidate.parameters.get("strategy_id", ""))
             if not strategy_id:
-                enriched_parameters = dict(candidate.parameters)
+                enriched_parameters = self._strategy_id_payload(candidate)
                 enriched_parameters["strategy_name"] = candidate.strategy_name
                 strategy_id = build_strategy_id(enriched_parameters).replace(
                     "generated_",
@@ -224,14 +304,25 @@ class StrategyDiscoveryService:
             save_strategy_payload(payload, self.generated_strategy_dir)
         self.experiment_db.record_candidates(candidates)
 
-    def discover_for_symbol(self, symbol: str, features) -> list[StrategyCandidate]:
+    def discover_for_symbol(
+        self,
+        symbol: str,
+        features,
+        *,
+        dataset_version: str | None = None,
+        feature_set_id: str | None = None,
+        experiment_id: str | None = None,
+        regime_labels: list[str] | None = None,
+        regime_metrics: dict[str, dict[str, float]] | None = None,
+    ) -> list[StrategyCandidate]:
         """Run large-scale discovery and return the top-ranked strategies."""
 
         raw_candidates = self._traditional_candidates(symbol, features)
         raw_candidates.extend(self._generated_candidates(symbol, features))
+        raw_candidates.extend(self._agent_candidates(symbol, features))
         deduplicated: dict[CandidateKey, StrategyCandidate] = {}
         for candidate in raw_candidates:
-            key = (candidate.strategy_name, tuple(sorted(candidate.parameters.items())))
+            key = self._dedup_key(candidate)
             existing = deduplicated.get(key)
             if existing is None or candidate.score > existing.score:
                 deduplicated[key] = candidate
@@ -243,5 +334,13 @@ class StrategyDiscoveryService:
         ]
         combined = self.ranker.rank(validated + shortlisted[self.config.validate_top_n :])
         top_candidates = combined[: self.config.top_n_strategies]
+        self._apply_context(
+            top_candidates,
+            dataset_version=dataset_version,
+            feature_set_id=feature_set_id,
+            experiment_id=experiment_id,
+            regime_labels=regime_labels,
+            regime_metrics=regime_metrics,
+        )
         self._persist_top_candidates(top_candidates)
         return top_candidates

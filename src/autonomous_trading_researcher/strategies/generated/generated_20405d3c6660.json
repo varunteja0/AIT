@@ -1,0 +1,36 @@
+{
+  "family": "generated",
+  "metrics": {
+    "max_drawdown": 9.251513423014224e-06,
+    "profit_factor": 29.539513860365798,
+    "sharpe_ratio": 0.2752821324058462,
+    "sortino_ratio": 0.0,
+    "total_return": 0.0002453701386035956,
+    "win_rate": 1.0
+  },
+  "parameters": {
+    "alpha_t_stat": 0.963019,
+    "dataset_version": "ds-20260310T194355Z-b811b553850a",
+    "experiment_id": "exp-20260310T194356Z-ETH-USDT",
+    "feature_set_id": "fs-20260310T194356Z-247edbed807a",
+    "holding_period": 1,
+    "leverage": 1.0,
+    "primary_feature": "slow_ma_1m",
+    "regime_labels": [],
+    "regime_metrics": {},
+    "secondary_feature": "slow_ma_5m",
+    "secondary_threshold": 1960.9474666666667,
+    "stat_validation_passed": 0,
+    "strategy_id": "generated_20405d3c6660",
+    "symbol": "ETH/USDT",
+    "template": "feature_combo_long",
+    "threshold": 1985.16,
+    "validation_reasons": "min_sharpe,min_sortino",
+    "walk_forward_folds": 3,
+    "walk_forward_score": 0.619392
+  },
+  "score": -995.5569211098962,
+  "strategy_id": "generated_20405d3c6660",
+  "strategy_name": "generated_20405d3c6660",
+  "symbol": "ETH/USDT"
+}

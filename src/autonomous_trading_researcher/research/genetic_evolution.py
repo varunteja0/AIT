@@ -6,6 +6,7 @@ import random
 
 from autonomous_trading_researcher.backtesting.vectorized import VectorizedBacktestEngine
 from autonomous_trading_researcher.core.models import StrategyCandidate
+from autonomous_trading_researcher.infra.distributed.backends import ExecutionBackend
 from autonomous_trading_researcher.research.ranking import CandidateRanker
 from autonomous_trading_researcher.research.strategy_generator import (
     GeneratedStrategy,
@@ -24,6 +25,7 @@ class GeneticStrategyEvolutionEngine:
         population_size: int,
         generations: int,
         max_workers: int,
+        execution_backend: ExecutionBackend | None = None,
         mutation_rate: float = 0.25,
         crossover_rate: float = 0.7,
         elite_fraction: float = 0.2,
@@ -35,6 +37,7 @@ class GeneticStrategyEvolutionEngine:
         self.population_size = max(2, population_size)
         self.generations = max(1, generations)
         self.max_workers = max(1, max_workers)
+        self.execution_backend = execution_backend
         self.mutation_rate = mutation_rate
         self.crossover_rate = crossover_rate
         self.elite_fraction = elite_fraction
@@ -53,6 +56,7 @@ class GeneticStrategyEvolutionEngine:
             population,
             symbol=symbol,
             max_workers=self.max_workers,
+            backend=self.execution_backend,
         )
         candidates = [
             StrategyCandidate(

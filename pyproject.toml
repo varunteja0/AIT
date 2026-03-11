@@ -26,6 +26,9 @@ dev = [
   "pytest>=8.3.4",
   "ruff>=0.9.10",
 ]
+distributed = [
+  "ray>=2.40.0",
+]
 
 [project.scripts]
 atr = "autonomous_trading_researcher.cli:main"

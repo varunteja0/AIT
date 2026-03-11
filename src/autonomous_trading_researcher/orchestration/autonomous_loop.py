@@ -6,6 +6,9 @@ import asyncio
 import logging
 import os
 from collections import Counter
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -18,22 +21,38 @@ from autonomous_trading_researcher.core.models import (
     PortfolioState,
     StrategyCandidate,
 )
+from autonomous_trading_researcher.core.portfolio import AllocationResult, PortfolioAllocator
+from autonomous_trading_researcher.core.regimes import RegimeDetector
 from autonomous_trading_researcher.data.clients.ccxt_client import CCXTMarketDataClient
 from autonomous_trading_researcher.data.datasets import HistoricalDatasetBuilder
 from autonomous_trading_researcher.data.ingestion import MarketDataCollector
 from autonomous_trading_researcher.data.storage import ParquetDataLake
+from autonomous_trading_researcher.data.versioning import DatasetVersionManager
 from autonomous_trading_researcher.execution.ccxt_execution import CCXTExecutionBroker
 from autonomous_trading_researcher.execution.ensemble import StrategyEnsembleEngine
 from autonomous_trading_researcher.execution.order_manager import ExecutionService
 from autonomous_trading_researcher.execution.paper_broker import PaperExecutionBroker
 from autonomous_trading_researcher.features.pipeline import FeaturePipeline
+from autonomous_trading_researcher.features.feature_sets import FeatureSetStore
+from autonomous_trading_researcher.infra.distributed import build_backend
 from autonomous_trading_researcher.monitoring.service import MonitoringService
 from autonomous_trading_researcher.research.discovery import StrategyDiscoveryService
+from autonomous_trading_researcher.research.experiment_db import Experiment
 from autonomous_trading_researcher.risk.limits import RiskLimits
 from autonomous_trading_researcher.risk.manager import RiskManager
 from autonomous_trading_researcher.strategies.registry import get_strategy
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class DatasetContext:
+    """Metadata produced when building a dataset and feature set."""
+
+    dataset_version: str | None
+    feature_set_id: str | None
+    regime_labels: list[str]
+    regime_metrics: dict[str, dict[str, float]]
 
 
 class AutonomousResearchLoop:
@@ -51,6 +70,10 @@ class AutonomousResearchLoop:
         monitoring_service: MonitoringService,
         execution_service: ExecutionService | None,
         ensemble_engine: StrategyEnsembleEngine,
+        dataset_versioner: DatasetVersionManager | None,
+        feature_set_store: FeatureSetStore | None,
+        regime_detector: RegimeDetector,
+        portfolio_allocator: PortfolioAllocator,
     ) -> None:
         self.config = config
         self.storage = storage
@@ -62,6 +85,10 @@ class AutonomousResearchLoop:
         self.monitoring_service = monitoring_service
         self.execution_service = execution_service
         self.ensemble_engine = ensemble_engine
+        self.dataset_versioner = dataset_versioner
+        self.feature_set_store = feature_set_store
+        self.regime_detector = regime_detector
+        self.portfolio_allocator = portfolio_allocator
         self.portfolio_state = PortfolioState(
             cash=config.backtesting.starting_cash,
             equity=config.backtesting.starting_cash,
@@ -69,6 +96,7 @@ class AutonomousResearchLoop:
         )
         self.deployed_candidate: StrategyCandidate | None = None
         self.deployed_candidates: list[StrategyCandidate] = []
+        self.latest_allocation: AllocationResult | None = None
 
     @classmethod
     def from_config(cls, config: AppConfig) -> AutonomousResearchLoop:
@@ -102,11 +130,49 @@ class AutonomousResearchLoop:
             config.feature_engineering,
             base_timeframe=config.data.ohlcv_timeframe,
         )
+        dataset_root = Path(config.data.data_dir).parent
+        dataset_dir = (
+            Path(config.data.dataset_dir)
+            if config.data.dataset_dir is not None
+            else dataset_root / "datasets"
+        )
+        feature_set_dir = (
+            Path(config.feature_engineering.feature_set_dir)
+            if config.feature_engineering.feature_set_dir is not None
+            else dataset_root / "feature_sets"
+        )
+        dataset_versioner = (
+            DatasetVersionManager(dataset_dir)
+            if config.data.dataset_versioning_enabled
+            else None
+        )
+        feature_set_store = (
+            FeatureSetStore(feature_set_dir)
+            if config.feature_engineering.feature_set_enabled
+            else None
+        )
+        regime_detector = RegimeDetector(
+            window=config.regimes.window,
+            trend_threshold=config.regimes.trend_threshold,
+            mean_reversion_threshold=config.regimes.mean_reversion_threshold,
+            volatility_expansion_threshold=config.regimes.volatility_expansion_threshold,
+            low_liquidity_quantile=config.regimes.low_liquidity_quantile,
+        )
+        portfolio_allocator = PortfolioAllocator(
+            annualization_factor=config.backtesting.annualization_factor,
+        )
+        execution_backend = build_backend(
+            config.research.execution_backend,
+            max_workers=config.research.max_parallel_workers,
+            ray_address=config.research.ray_address,
+            ray_namespace=config.research.ray_namespace,
+        )
         discovery_service = StrategyDiscoveryService(
             config=config.research,
             validation_config=config.validation,
             vectorized_backtester=VectorizedBacktestEngine(config.backtesting),
             event_driven_backtester=EventDrivenBacktestEngine(config.backtesting),
+            execution_backend=execution_backend,
         )
         risk_manager = RiskManager(RiskLimits.from_config(config.risk))
         monitoring_service = MonitoringService(
@@ -149,6 +215,10 @@ class AutonomousResearchLoop:
             monitoring_service=monitoring_service,
             execution_service=execution_service,
             ensemble_engine=ensemble_engine,
+            dataset_versioner=dataset_versioner,
+            feature_set_store=feature_set_store,
+            regime_detector=regime_detector,
+            portfolio_allocator=portfolio_allocator,
         )
 
     async def _collect_data(self) -> None:
@@ -183,35 +253,70 @@ class AutonomousResearchLoop:
         if self.execution_service is not None:
             await self.execution_service.broker.close()
 
-    def _load_features(self, symbol: str) -> pd.DataFrame:
+    def _load_features(self, symbol: str) -> tuple[pd.DataFrame, DatasetContext | None]:
         """Load, aggregate, and feature-engineer market data for one symbol."""
 
         trades = self.storage.read_dataset("trades", self.config.data.exchange_id, symbol)
         if trades.empty:
-            return trades
+            return trades, None
         order_books = self.storage.read_dataset(
             "order_books",
             self.config.data.exchange_id,
             symbol,
         )
-        timeframes = list(dict.fromkeys(
-            [self.config.data.ohlcv_timeframe, *self.config.feature_engineering.timeframes]
-        ))
+        timeframes = list(
+            dict.fromkeys(
+                [self.config.data.ohlcv_timeframe, *self.config.feature_engineering.timeframes]
+            )
+        )
         datasets = self.dataset_builder.build_multi_resolution_datasets(
             trades,
             order_books,
             timeframes=timeframes,
         )
-        return self.feature_pipeline.build(datasets)
+        features = self.feature_pipeline.build(datasets)
+        if features.empty:
+            return features, None
+
+        regime_detection = self.regime_detector.detect(features)
+        dataset_version: str | None = None
+        if self.dataset_versioner is not None and self.config.data.dataset_versioning_enabled:
+            manifest = self.dataset_versioner.persist(
+                exchange_id=self.config.data.exchange_id,
+                symbol=symbol,
+                datasets=datasets,
+                regime_labels=regime_detection.labels,
+                metadata={"timeframes": timeframes},
+            )
+            dataset_version = manifest.version.version_id
+
+        feature_set_id: str | None = None
+        if (
+            dataset_version is not None
+            and self.feature_set_store is not None
+            and self.config.feature_engineering.feature_set_enabled
+        ):
+            feature_set = self.feature_set_store.create(features.columns, dataset_version)
+            feature_set_id = feature_set.feature_set_id
+
+        context = DatasetContext(
+            dataset_version=dataset_version,
+            feature_set_id=feature_set_id,
+            regime_labels=regime_detection.labels,
+            regime_metrics=regime_detection.metrics,
+        )
+        return features, context
 
     async def _deploy_ensemble(
         self,
         candidates: list[StrategyCandidate],
         feature_frames: dict[str, pd.DataFrame],
-    ) -> None:
+    ) -> AllocationResult:
         """Deploy the top ensemble of validated strategies."""
 
         selected = self.ensemble_engine.select(candidates)
+        allocation = self.portfolio_allocator.allocate(selected)
+        self.latest_allocation = allocation
         previous_ids = {
             str(candidate.parameters.get("strategy_id", candidate.strategy_name))
             for candidate in self.deployed_candidates
@@ -227,14 +332,25 @@ class AutonomousResearchLoop:
         self.deployed_candidates = selected
         self.deployed_candidate = selected[0] if selected else None
         if self.execution_service is None or not selected:
-            return
+            return allocation
 
         for symbol in sorted({candidate.symbol for candidate in selected}):
             symbol_candidates = [candidate for candidate in selected if candidate.symbol == symbol]
             features = feature_frames.get(symbol)
             if features is None or features.empty:
                 continue
-            decision = self.ensemble_engine.aggregate_signal(symbol_candidates, features)
+            weights = [
+                allocation.weights.get(
+                    str(candidate.parameters.get("strategy_id", candidate.strategy_name)),
+                    0.0,
+                )
+                for candidate in symbol_candidates
+            ]
+            decision = self.ensemble_engine.aggregate_signal(
+                symbol_candidates,
+                features,
+                weights=weights,
+            )
             if decision.direction == SignalDirection.FLAT:
                 continue
             side = (
@@ -250,7 +366,12 @@ class AutonomousResearchLoop:
             avg_profit_factor = sum(
                 candidate.backtest_result.metrics.profit_factor for candidate in symbol_candidates
             ) / len(symbol_candidates)
-            base_fraction = self.config.backtesting.position_size * decision.confidence
+            symbol_weight = allocation.symbol_weights.get(symbol, 0.0)
+            base_fraction = (
+                self.config.backtesting.position_size
+                * decision.confidence
+                * max(symbol_weight, 0.0)
+            )
             target_fraction = self.risk_manager.recommended_position_fraction(
                 base_fraction=base_fraction,
                 realized_volatility=realized_volatility,
@@ -287,6 +408,7 @@ class AutonomousResearchLoop:
                     "amount": amount,
                 },
             )
+        return allocation
 
     def _extract_top_features(
         self,
@@ -357,6 +479,68 @@ class AutonomousResearchLoop:
         correlation = features[columns].corr().round(4).fillna(0.0)
         return correlation.to_dict()
 
+    @staticmethod
+    def _sanitize_symbol(symbol: str) -> str:
+        return symbol.replace("/", "-").replace(":", "-")
+
+    def _start_experiment(
+        self,
+        symbol: str,
+        context: DatasetContext | None,
+    ) -> str:
+        """Create a new experiment run record."""
+
+        timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+        experiment_id = f"exp-{timestamp}-{self._sanitize_symbol(symbol)}"
+        experiment = Experiment(
+            experiment_id=experiment_id,
+            dataset_version=context.dataset_version if context else None,
+            feature_set_id=context.feature_set_id if context else None,
+            strategy_config={
+                "enabled_strategies": list(self.config.research.enabled_strategies),
+                "ranking_weights": dict(self.config.research.ranking_weights),
+            },
+            parameters={
+                "exchange_id": self.config.data.exchange_id,
+                "symbol": symbol,
+                "timeframes": list(self.config.feature_engineering.timeframes),
+                "ohlcv_timeframe": self.config.data.ohlcv_timeframe,
+                "dataset_version": context.dataset_version if context else None,
+                "feature_set_id": context.feature_set_id if context else None,
+                "regime_labels": context.regime_labels if context else [],
+                "regime_metrics": context.regime_metrics if context else {},
+            },
+            metrics=None,
+            status="running",
+            start_time=datetime.now(tz=UTC),
+            end_time=None,
+        )
+        self.discovery_service.experiment_db.record_experiment_start(experiment)
+        return experiment_id
+
+    def _finalize_experiment(
+        self,
+        experiment_id: str,
+        candidates: list[StrategyCandidate],
+    ) -> None:
+        """Persist experiment summary metrics."""
+
+        if not candidates:
+            metrics: dict[str, object] = {"candidate_count": 0}
+        else:
+            best = candidates[0]
+            metrics = {
+                "candidate_count": len(candidates),
+                "best_score": best.score,
+                "best_strategy": best.strategy_name,
+                "metrics": asdict(best.backtest_result.metrics),
+            }
+        self.discovery_service.experiment_db.record_experiment_result(
+            experiment_id,
+            metrics=metrics,
+            status="completed",
+        )
+
     async def discover_only(self) -> dict[str, object]:
         """Run discovery without deployment."""
 
@@ -385,7 +569,7 @@ class AutonomousResearchLoop:
         """Backtest a saved strategy against the latest available feature set."""
 
         target_symbol = symbol or self.config.data.symbols[0]
-        features = self._load_features(target_symbol)
+        features, _ = self._load_features(target_symbol)
         if features.empty:
             raise ValueError(f"no_features_available:{target_symbol}")
         if strategy_id is None:
@@ -414,19 +598,35 @@ class AutonomousResearchLoop:
 
         for symbol in self.config.data.symbols:
             self.monitoring_service.record_event("feature_generation_started", {"symbol": symbol})
-            features = self._load_features(symbol)
+            features, context = self._load_features(symbol)
             if features.empty:
                 LOGGER.warning("symbol_has_no_features", extra={"symbol": symbol})
                 continue
+            context = context or DatasetContext(
+                dataset_version=None,
+                feature_set_id=None,
+                regime_labels=[],
+                regime_metrics={},
+            )
             feature_frames[symbol] = features
+            experiment_id = self._start_experiment(symbol, context)
             self.monitoring_service.record_event("strategy_discovery_started", {"symbol": symbol})
-            candidates = self.discovery_service.discover_for_symbol(symbol, features)
+            candidates = self.discovery_service.discover_for_symbol(
+                symbol,
+                features,
+                dataset_version=context.dataset_version,
+                feature_set_id=context.feature_set_id,
+                experiment_id=experiment_id,
+                regime_labels=context.regime_labels,
+                regime_metrics=context.regime_metrics,
+            )
             if candidates:
                 all_candidates.extend(candidates)
                 self.monitoring_service.record_event(
                     "strategy_discovery_completed",
                     {"symbol": symbol, "candidates": len(candidates)},
                 )
+            self._finalize_experiment(experiment_id, candidates)
 
         ranked_candidates = self.discovery_service.ranker.rank(all_candidates)
         deployable_candidates = [
@@ -437,11 +637,16 @@ class AutonomousResearchLoop:
         best_candidate = deployable_candidates[0] if deployable_candidates else (
             ranked_candidates[0] if ranked_candidates else None
         )
+        allocation_result: AllocationResult | None = None
         if deployable_candidates and not emit_monitoring_only:
-            await self._deploy_ensemble(deployable_candidates, feature_frames)
+            allocation_result = await self._deploy_ensemble(
+                deployable_candidates,
+                feature_frames,
+            )
         elif not deployable_candidates and not emit_monitoring_only:
             self.deployed_candidates = []
             self.deployed_candidate = None
+            self.latest_allocation = None
 
         top_features = self._extract_top_features(ranked_candidates)
         feature_correlations = (
@@ -478,6 +683,9 @@ class AutonomousResearchLoop:
             feature_correlations=feature_correlations,
             equity_curve=equity_curve,
             drawdown_curve=drawdown_curve,
+            portfolio_allocation=(
+                allocation_result.symbol_weights if allocation_result is not None else {}
+            ),
             sharpe_ratio=(
                 best_candidate.backtest_result.metrics.sharpe_ratio if best_candidate else 0.0
             ),
