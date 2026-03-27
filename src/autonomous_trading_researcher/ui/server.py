@@ -14,12 +14,23 @@ from fastapi.responses import HTMLResponse
 
 from autonomous_trading_researcher.config import load_config
 from autonomous_trading_researcher.research.experiment_db import ExperimentDatabase
+from autonomous_trading_researcher.research.knowledge_graph.queries import (
+    get_strategies_that_fail_in_regime,
+    get_top_features_by_sharpe,
+)
+from autonomous_trading_researcher.research.knowledge_graph.store import (
+    SqliteKnowledgeGraphStore,
+)
 from autonomous_trading_researcher.ui.visualization import (
     drawdown_figure,
     equity_curve_figure,
+    experiment_performance_figure,
     feature_correlation_figure,
     feature_importance_figure,
+    portfolio_allocation_figure,
     optimization_results_figure,
+    regime_heatmap_figure,
+    strategy_network_figure,
     strategy_performance_figure,
 )
 
@@ -57,6 +68,8 @@ def create_app(config_path: str = "config/default.yaml") -> FastAPI:
     app = FastAPI(title="Autonomous Trading Researcher Dashboard")
     app.state.config = config
     app.state.database = ExperimentDatabase(config.research.experiment_db_path)
+    graph_path = Path(config.research.experiment_db_path).with_name("knowledge_graph.db")
+    app.state.graph_store = SqliteKnowledgeGraphStore(graph_path)
     app.state.status_path = Path(config.monitoring.status_path)
     app.state.event_log_path = Path(config.monitoring.event_log_path)
 
@@ -107,6 +120,10 @@ def create_app(config_path: str = "config/default.yaml") -> FastAPI:
                   <div class="card chart" id="feature-importance"></div>
                   <div class="card chart" id="feature-correlations"></div>
                   <div class="card chart" id="optimization-results"></div>
+                  <div class="card chart" id="experiment-performance"></div>
+                  <div class="card chart" id="strategy-network"></div>
+                  <div class="card chart" id="regime-heatmap"></div>
+                  <div class="card chart" id="portfolio-allocation"></div>
                 </section>
               </main>
               <script>
@@ -153,6 +170,10 @@ def create_app(config_path: str = "config/default.yaml") -> FastAPI:
                   Plotly.react('feature-importance', metrics.feature_importance.data, metrics.feature_importance.layout);
                   Plotly.react('feature-correlations', metrics.feature_correlations.data, metrics.feature_correlations.layout);
                   Plotly.react('optimization-results', metrics.optimization_results.data, metrics.optimization_results.layout);
+                  Plotly.react('experiment-performance', metrics.experiment_performance.data, metrics.experiment_performance.layout);
+                  Plotly.react('strategy-network', metrics.strategy_network.data, metrics.strategy_network.layout);
+                  Plotly.react('regime-heatmap', metrics.regime_heatmap.data, metrics.regime_heatmap.layout);
+                  Plotly.react('portfolio-allocation', metrics.portfolio_allocation.data, metrics.portfolio_allocation.layout);
                 }}
 
                 loadDashboard();
@@ -184,6 +205,52 @@ def create_app(config_path: str = "config/default.yaml") -> FastAPI:
         payload["experiment_summary"] = app.state.database.summary()
         return payload
 
+    @app.get("/api/experiments")
+    async def experiments(limit: int = 100) -> dict[str, Any]:
+        """Return recent experiment runs."""
+
+        return {"experiments": app.state.database.list_experiments(limit=limit)}
+
+    @app.get("/api/knowledge/features")
+    async def knowledge_features(top_n: int = 20) -> dict[str, Any]:
+        """Return top features from the knowledge graph."""
+
+        return {
+            "features": get_top_features_by_sharpe(
+                app.state.graph_store,
+                top_n=top_n,
+            )
+        }
+
+    @app.get("/api/knowledge/strategies")
+    async def knowledge_strategies(
+        regime: str | None = None,
+        sharpe_threshold: float = 0.0,
+    ) -> dict[str, Any]:
+        """Return strategy intelligence from the knowledge graph."""
+
+        if regime:
+            strategies = get_strategies_that_fail_in_regime(
+                app.state.graph_store,
+                regime=regime,
+                sharpe_threshold=sharpe_threshold,
+            )
+        else:
+            strategies = app.state.database.top_strategies(limit=20)
+        return {"strategies": strategies}
+
+    @app.get("/api/knowledge/graph")
+    async def knowledge_graph(
+        node_limit: int = 500,
+        edge_limit: int = 1000,
+    ) -> dict[str, Any]:
+        """Return graph nodes and edges for visualization."""
+
+        return {
+            "nodes": app.state.graph_store.list_nodes(limit=node_limit),
+            "edges": app.state.graph_store.list_edges(limit=edge_limit),
+        }
+
     @app.get("/api/metrics")
     async def metrics() -> dict[str, Any]:
         """Return dashboard-ready Plotly figures."""
@@ -191,6 +258,12 @@ def create_app(config_path: str = "config/default.yaml") -> FastAPI:
         top_strategies_payload = app.state.database.top_strategies(limit=20)
         status_payload = _read_status_file(app.state.status_path)
         feature_correlations = status_payload.get("details", {}).get("feature_correlations", {})
+        experiments_payload = app.state.database.list_experiments(limit=50)
+        graph_payload = {
+            "nodes": app.state.graph_store.list_nodes(limit=300),
+            "edges": app.state.graph_store.list_edges(limit=600),
+        }
+        allocation_payload = status_payload.get("details", {}).get("portfolio_allocation", {})
         return {
             "equity_curve": equity_curve_figure(top_strategies_payload),
             "drawdown": drawdown_figure(top_strategies_payload),
@@ -198,6 +271,13 @@ def create_app(config_path: str = "config/default.yaml") -> FastAPI:
             "feature_importance": feature_importance_figure(top_strategies_payload),
             "feature_correlations": feature_correlation_figure(feature_correlations),
             "optimization_results": optimization_results_figure(top_strategies_payload),
+            "experiment_performance": experiment_performance_figure(experiments_payload),
+            "strategy_network": strategy_network_figure(
+                graph_payload["nodes"],
+                graph_payload["edges"],
+            ),
+            "regime_heatmap": regime_heatmap_figure(experiments_payload),
+            "portfolio_allocation": portfolio_allocation_figure(allocation_payload),
         }
 
     return app

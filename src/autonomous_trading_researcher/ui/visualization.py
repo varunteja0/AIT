@@ -135,3 +135,123 @@ def optimization_results_figure(top_strategies: list[dict[str, Any]]) -> dict[st
     )
     return figure.to_plotly_json()
 
+
+def experiment_performance_figure(experiments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Plot experiment scores over time."""
+
+    if not experiments:
+        return _empty_figure("Experiment Performance")
+    sorted_experiments = sorted(experiments, key=lambda item: item.get("start_time") or "")
+    times = [item.get("start_time") for item in sorted_experiments]
+    scores = [
+        float(item.get("metrics", {}).get("best_score", 0.0)) for item in sorted_experiments
+    ]
+    figure = go.Figure()
+    figure.add_trace(go.Scatter(x=times, y=scores, mode="lines+markers", name="best_score"))
+    figure.update_layout(title="Experiment Performance", xaxis_title="Start Time")
+    return figure.to_plotly_json()
+
+
+def strategy_network_figure(
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Render a lightweight strategy network visualization."""
+
+    if not nodes:
+        return _empty_figure("Strategy Network")
+    type_levels = {
+        "FEATURE": 0,
+        "STRATEGY": 1,
+        "EXPERIMENT": 2,
+        "DATASET": 3,
+        "REGIME": 4,
+    }
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        grouped.setdefault(node["type"], []).append(node)
+    positions: dict[str, tuple[float, float]] = {}
+    for node_type, items in grouped.items():
+        y = type_levels.get(node_type, 0)
+        for index, node in enumerate(items):
+            positions[node["id"]] = (float(index), float(y))
+
+    edge_x: list[float] = []
+    edge_y: list[float] = []
+    for edge in edges:
+        source = positions.get(edge["source_id"])
+        target = positions.get(edge["target_id"])
+        if source is None or target is None:
+            continue
+        edge_x.extend([source[0], target[0], None])
+        edge_y.extend([source[1], target[1], None])
+
+    node_x = [positions[node["id"]][0] for node in nodes if node["id"] in positions]
+    node_y = [positions[node["id"]][1] for node in nodes if node["id"] in positions]
+    node_labels = [node["id"] for node in nodes if node["id"] in positions]
+
+    figure = go.Figure()
+    if edge_x:
+        figure.add_trace(
+            go.Scatter(
+                x=edge_x,
+                y=edge_y,
+                mode="lines",
+                line={"width": 1, "color": "#94a3b8"},
+                hoverinfo="none",
+                showlegend=False,
+            )
+        )
+    figure.add_trace(
+        go.Scatter(
+            x=node_x,
+            y=node_y,
+            mode="markers",
+            marker={"size": 10, "color": "#0f766e"},
+            text=node_labels,
+            hoverinfo="text",
+            showlegend=False,
+        )
+    )
+    figure.update_layout(title="Strategy Network", xaxis_visible=False, yaxis_visible=False)
+    return figure.to_plotly_json()
+
+
+def regime_heatmap_figure(experiments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Visualize average experiment scores by detected regime."""
+
+    if not experiments:
+        return _empty_figure("Regime Heatmap")
+    regime_scores: dict[str, list[float]] = {}
+    for experiment in experiments:
+        labels = experiment.get("parameters", {}).get("regime_labels", []) or []
+        score = float(experiment.get("metrics", {}).get("best_score", 0.0))
+        for label in labels:
+            regime_scores.setdefault(label, []).append(score)
+    if not regime_scores:
+        return _empty_figure("Regime Heatmap")
+    regimes = sorted(regime_scores.keys())
+    values = [sum(regime_scores[label]) / len(regime_scores[label]) for label in regimes]
+    figure = go.Figure(
+        data=go.Heatmap(
+            z=[values],
+            x=regimes,
+            y=["avg_score"],
+            colorscale="YlOrRd",
+        )
+    )
+    figure.update_layout(title="Regime Heatmap")
+    return figure.to_plotly_json()
+
+
+def portfolio_allocation_figure(allocation: dict[str, float]) -> dict[str, Any]:
+    """Render current portfolio allocation weights."""
+
+    if not allocation:
+        return _empty_figure("Portfolio Allocation")
+    symbols = list(allocation.keys())
+    weights = [allocation[symbol] for symbol in symbols]
+    figure = go.Figure()
+    figure.add_trace(go.Bar(x=symbols, y=weights))
+    figure.update_layout(title="Portfolio Allocation", xaxis_title="Symbol", yaxis_title="Weight")
+    return figure.to_plotly_json()

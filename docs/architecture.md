@@ -6,9 +6,13 @@ The repository is organized as an autonomous quantitative research laboratory wi
 
 - `data`: CCXT ingestion, parquet storage, and historical dataset construction.
 - `features`: classical indicators plus market microstructure features.
+- `features/feature_sets`: feature set versioning and persistence.
 - `strategies`: built-in strategies, generated strategy persistence, and registry loading.
 - `backtesting`: event-driven simulation, vectorized simulation, and parallel batch execution.
 - `research`: strategy generation, large-scale discovery, Bayesian optimization, genetic evolution, and experiment tracking.
+- `core/regimes`: regime detection and labeling utilities.
+- `core/portfolio`: portfolio allocation and correlation-aware weighting.
+- `infra/distributed`: distributed execution backends for batch evaluation.
 - `risk`: portfolio limits and trading halts.
 - `execution`: paper trading and `ccxt` execution services.
 - `monitoring`: state snapshots, event logs, and dashboard-facing status persistence.
@@ -27,7 +31,9 @@ The repository is organized as an autonomous quantitative research laboratory wi
    - top-of-book prices
    - top-of-book depth
 6. Multi-resolution datasets are built for `1s`, `5s`, `1m`, and `5m` bars with UTC-normalized, deduplicated, gap-filled indexes.
-7. `FeaturePipeline` computes both traditional indicators and microstructure signals.
+7. Versioned datasets are persisted under `data/datasets/<version>/<exchange>/<symbol>/<timeframe>/<date>.parquet` with a manifest per version.
+8. `FeaturePipeline` computes both traditional indicators and microstructure signals.
+9. Feature sets are versioned independently under `data/feature_sets` and linked to dataset versions.
 
 ## Feature engine
 
@@ -59,6 +65,8 @@ Discovery now spans three families:
 3. Microstructure-aware generated strategies emphasizing order flow, imbalance, and queue dynamics.
 
 Discovery evaluates large populations in parallel with the vectorized backtester, validates shortlisted winners with the event-driven backtester, runs walk-forward out-of-sample checks on the best candidates, applies statistical acceptance thresholds, persists experiments to SQLite, persists Optuna studies to SQLite, and saves the best deployable strategies under `strategies/generated/`.
+
+Experiment runs are recorded separately from per-strategy results, allowing the dashboard to track dataset and feature-set versions per research cycle.
 
 ## Backtesting and validation
 
@@ -106,6 +114,7 @@ Execution remains risk-gated:
 - the risk manager enforces projected position size, projected exposure, daily loss, drawdown, volatility targeting, and Kelly-bounded sizing before order submission
 - an ensemble engine selects the top validated strategies and combines their signals with weighted voting
 - the execution layer updates local portfolio state after fills
+- a portfolio allocator computes correlation-aware weights and symbol-level allocation targets
 
 ## Autonomous loop
 
@@ -129,6 +138,10 @@ The FastAPI dashboard exposes:
 - `/api/top_strategies`
 - `/api/system_status`
 - `/api/metrics`
+- `/api/experiments`
+- `/api/knowledge/features`
+- `/api/knowledge/strategies`
+- `/api/knowledge/graph`
 
 The UI renders:
 
@@ -144,3 +157,7 @@ The UI renders:
 - feature correlation heatmap
 - optimization scatter plots
 - recent event-log entries
+- experiment performance over time
+- strategy network visualization
+- regime heatmap
+- portfolio allocation breakdown

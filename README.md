@@ -16,6 +16,9 @@ Autonomous AI Trading Researcher is a modular quantitative trading research plat
 - Risk controls for position size, exposure, daily loss, and drawdown.
 - Execution adapters backed by `ccxt`.
 - Monitoring and an autonomous research loop that can rank and deploy the best candidate.
+- Dataset versioning and feature-set manifests for reproducible research runs.
+- Regime detection, portfolio allocation, and a persistent research knowledge graph.
+- Distributed execution backends for scaling batch backtests.
 
 ## Repository layout
 
@@ -34,6 +37,12 @@ source .venv/bin/activate
 pip install -e '.[dev]'
 pytest
 atr research --config config/default.yaml
+```
+
+The FastAPI dashboard serves both HTML and JSON APIs. Start it with:
+
+```bash
+atr dashboard --config config/default.yaml --host 0.0.0.0 --port 8000
 ```
 
 ## Workflow coverage
@@ -56,4 +65,3 @@ The implementation follows the required build sequence:
 - The project defaults to paper-trading safe behavior.
 - Live execution requires valid exchange credentials and explicit enablement in the configuration.
 - The data collector uses resilient polling via `ccxt` to ingest trades and order book snapshots.
-

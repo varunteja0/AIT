@@ -1,0 +1,35 @@
+{
+  "family": "generated",
+  "metrics": {
+    "max_drawdown": 0.00014362014939472978,
+    "profit_factor": 0.5873693200257465,
+    "sharpe_ratio": -0.10161143186699963,
+    "sortino_ratio": -0.01171304791974744,
+    "total_return": -5.733925721562727e-05,
+    "win_rate": 0.4
+  },
+  "parameters": {
+    "alpha_t_stat": -0.35541,
+    "dataset_version": "ds-20260310T192436Z-3614d8a97eb7",
+    "experiment_id": "exp-20260310T192436Z-BTC-USDT",
+    "feature_set_id": "fs-20260310T192436Z-55af3f0fce1b",
+    "holding_period": 3,
+    "leverage": 0.5,
+    "lookback": 1,
+    "primary_feature": "orderbook_imbalance_5s",
+    "regime_labels": [],
+    "regime_metrics": {},
+    "secondary_feature": "microprice_5m",
+    "stat_validation_passed": 0,
+    "strategy_id": "generated_9b5c7bf71ece",
+    "symbol": "BTC/USDT",
+    "template": "slope_combo_short",
+    "validation_reasons": "min_sharpe,min_sortino,min_profit_factor,min_alpha_t_stat",
+    "walk_forward_folds": 3,
+    "walk_forward_score": 0.033362
+  },
+  "score": -999.9274361935256,
+  "strategy_id": "generated_9b5c7bf71ece",
+  "strategy_name": "generated_9b5c7bf71ece",
+  "symbol": "BTC/USDT"
+}

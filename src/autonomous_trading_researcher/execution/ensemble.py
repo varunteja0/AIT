@@ -45,12 +45,20 @@ class StrategyEnsembleEngine:
         self,
         candidates: list[StrategyCandidate],
         features: pd.DataFrame,
+        weights: list[float] | None = None,
     ) -> EnsembleDecision:
         """Aggregate member signals into one directional ensemble decision."""
 
         if not candidates:
             raise ValueError("ensemble_requires_candidates")
-        weights = self._weights(candidates)
+        if weights is None:
+            weights = self._weights(candidates)
+        total_weight = sum(weights)
+        if total_weight <= 0.0:
+            weights = self._weights(candidates)
+            total_weight = sum(weights)
+        if total_weight > 0.0:
+            weights = [weight / total_weight for weight in weights]
         vote = 0.0
         signal_map = {
             SignalDirection.LONG.value: 1.0,
