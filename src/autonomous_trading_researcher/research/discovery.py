@@ -6,9 +6,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from autonomous_trading_researcher.backtesting.engine import EventDrivenBacktestEngine
+from autonomous_trading_researcher.backtesting.statistics import StrategyStatisticsValidator
 from autonomous_trading_researcher.backtesting.validation import WalkForwardValidator
 from autonomous_trading_researcher.backtesting.vectorized import VectorizedBacktestEngine
-from autonomous_trading_researcher.config import ResearchConfig
+from autonomous_trading_researcher.config import ResearchConfig, ValidationConfig
 from autonomous_trading_researcher.core.models import StrategyCandidate
 from autonomous_trading_researcher.research.experiment_db import ExperimentDatabase
 from autonomous_trading_researcher.research.generator import iter_parameter_grid
@@ -33,15 +34,20 @@ class StrategyDiscoveryService:
     def __init__(
         self,
         config: ResearchConfig,
+        validation_config: ValidationConfig,
         vectorized_backtester: VectorizedBacktestEngine,
         event_driven_backtester: EventDrivenBacktestEngine,
     ) -> None:
         self.config = config
+        self.validation_config = validation_config
         self.vectorized_backtester = vectorized_backtester
         self.event_driven_backtester = event_driven_backtester
         self.ranker = CandidateRanker(config.ranking_weights)
-        self.bayesian = BayesianOptimizer()
+        self.bayesian = BayesianOptimizer(storage_path=config.optuna_storage_path)
         self.generator = MassiveStrategyGenerator(seed=config.generated_strategy_seed)
+        self.statistics_validator = StrategyStatisticsValidator(validation_config)
+        self.generated_candidate_count = max(config.generated_strategy_count, config.candidates)
+        self.generation_count = max(config.genetic_generations, config.generations)
         self.walk_forward = WalkForwardValidator(
             config=vectorized_backtester.config,
             backtester=vectorized_backtester,
@@ -51,7 +57,7 @@ class StrategyDiscoveryService:
             ranker=self.ranker,
             generator=self.generator,
             population_size=config.genetic_population,
-            generations=config.genetic_generations,
+            generations=self.generation_count,
             max_workers=config.max_parallel_workers,
         )
         self.experiment_db = ExperimentDatabase(config.experiment_db_path)
@@ -116,7 +122,10 @@ class StrategyDiscoveryService:
             if walk_forward_report is not None
             else event_score
         )
+        statistics_validation = self.statistics_validator.validate(validated_result)
         combined_score = (0.7 * event_score) + (0.3 * walk_forward_score)
+        if not statistics_validation.passed:
+            combined_score -= 1_000.0
         return StrategyCandidate(
             symbol=candidate.symbol,
             strategy_name=candidate.strategy_name,
@@ -126,6 +135,9 @@ class StrategyDiscoveryService:
                 "walk_forward_folds": (
                     walk_forward_report.fold_count if walk_forward_report is not None else 0
                 ),
+                "alpha_t_stat": round(statistics_validation.alpha_t_stat, 6),
+                "stat_validation_passed": int(statistics_validation.passed),
+                "validation_reasons": ",".join(statistics_validation.rejection_reasons),
             },
             score=combined_score,
             backtest_result=validated_result,
@@ -160,6 +172,7 @@ class StrategyDiscoveryService:
                         get_strategy(name, params),
                         features,
                     ),
+                    study_key=f"{symbol}:{strategy_name}",
                 )
             )
         return raw_candidates
@@ -170,7 +183,7 @@ class StrategyDiscoveryService:
         generated_population = self.generator.generate(
             features,
             symbol,
-            candidate_count=self.config.generated_strategy_count,
+            candidate_count=self.generated_candidate_count,
         )
         raw_candidates = self._evaluate_batch(symbol, features, generated_population)
         evolved_candidates = self.evolution.evolve(

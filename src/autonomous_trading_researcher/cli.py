@@ -24,9 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("research", help="Run a full autonomous research cycle.")
-    subparsers.add_parser("run", help="Run a full autonomous research cycle and deploy.")
-    subparsers.add_parser("discover", help="Run discovery without deployment.")
+    research_parser = subparsers.add_parser("research", help="Run autonomous research cycles.")
+    run_parser = subparsers.add_parser("run", help="Run research cycles and deploy an ensemble.")
+    discover_parser = subparsers.add_parser("discover", help="Run discovery without deployment.")
     subparsers.add_parser("monitor", help="Emit a monitoring snapshot after research.")
     collect_parser = subparsers.add_parser(
         "collect-data",
@@ -44,6 +44,25 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser = subparsers.add_parser("dashboard", help="Run the monitoring dashboard.")
     dashboard_parser.add_argument("--host", default=None, help="Dashboard bind host.")
     dashboard_parser.add_argument("--port", type=int, default=None, help="Dashboard port.")
+
+    for parser_with_mode in (research_parser, run_parser, discover_parser):
+        parser_with_mode.add_argument(
+            "--mode",
+            choices=("paper", "live"),
+            default=None,
+            help="Execution mode override.",
+        )
+        parser_with_mode.add_argument(
+            "--cycles",
+            type=int,
+            default=1,
+            help="Number of autonomous cycles to run.",
+        )
+        parser_with_mode.add_argument(
+            "--continuous",
+            action="store_true",
+            help="Run continuously until interrupted.",
+        )
     return parser
 
 
@@ -51,6 +70,14 @@ async def _run_async(args: argparse.Namespace) -> None:
     """Execute an asynchronous CLI command."""
 
     config = load_config(args.config)
+    if getattr(args, "mode", None) == "paper":
+        config.execution.mode = "paper"
+        config.execution.paper_trading = True
+        config.execution.enabled = False
+    elif getattr(args, "mode", None) == "live":
+        config.execution.mode = "live"
+        config.execution.paper_trading = False
+        config.execution.enabled = True
     configure_logging(config.logging.level, config.logging.json)
     orchestrator = AutonomousResearchLoop.from_config(config)
     try:
@@ -62,7 +89,11 @@ async def _run_async(args: argparse.Namespace) -> None:
                 await orchestrator.collect_data_once()
             return
         if args.command == "discover":
-            await orchestrator.discover_only()
+            if args.continuous:
+                await orchestrator.run_forever(max_cycles=None, emit_monitoring_only=True)
+            else:
+                for _ in range(args.cycles):
+                    await orchestrator.discover_only()
             return
         if args.command == "backtest":
             orchestrator.backtest_saved_strategy(
@@ -70,7 +101,11 @@ async def _run_async(args: argparse.Namespace) -> None:
                 symbol=args.symbol,
             )
             return
-        await orchestrator.run_cycle()
+        if args.continuous:
+            await orchestrator.run_forever(max_cycles=None)
+            return
+        for _ in range(args.cycles):
+            await orchestrator.run_cycle()
     finally:
         await orchestrator.close()
 

@@ -15,6 +15,8 @@ class RiskLimits:
     max_portfolio_exposure: float
     max_daily_loss: float
     max_drawdown: float
+    target_volatility: float
+    kelly_fraction_cap: float
 
     @classmethod
     def from_config(cls, config: RiskConfig) -> RiskLimits:
@@ -25,4 +27,6 @@ class RiskLimits:
             max_portfolio_exposure=config.max_portfolio_exposure,
             max_daily_loss=config.max_daily_loss,
             max_drawdown=config.max_drawdown,
+            target_volatility=config.target_volatility,
+            kelly_fraction_cap=config.kelly_fraction_cap,
         )

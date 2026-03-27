@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections import Counter
@@ -22,8 +23,9 @@ from autonomous_trading_researcher.data.datasets import HistoricalDatasetBuilder
 from autonomous_trading_researcher.data.ingestion import MarketDataCollector
 from autonomous_trading_researcher.data.storage import ParquetDataLake
 from autonomous_trading_researcher.execution.ccxt_execution import CCXTExecutionBroker
+from autonomous_trading_researcher.execution.ensemble import StrategyEnsembleEngine
 from autonomous_trading_researcher.execution.order_manager import ExecutionService
-from autonomous_trading_researcher.execution.paper import PaperExecutionBroker
+from autonomous_trading_researcher.execution.paper_broker import PaperExecutionBroker
 from autonomous_trading_researcher.features.pipeline import FeaturePipeline
 from autonomous_trading_researcher.monitoring.service import MonitoringService
 from autonomous_trading_researcher.research.discovery import StrategyDiscoveryService
@@ -48,6 +50,7 @@ class AutonomousResearchLoop:
         risk_manager: RiskManager,
         monitoring_service: MonitoringService,
         execution_service: ExecutionService | None,
+        ensemble_engine: StrategyEnsembleEngine,
     ) -> None:
         self.config = config
         self.storage = storage
@@ -58,12 +61,14 @@ class AutonomousResearchLoop:
         self.risk_manager = risk_manager
         self.monitoring_service = monitoring_service
         self.execution_service = execution_service
+        self.ensemble_engine = ensemble_engine
         self.portfolio_state = PortfolioState(
             cash=config.backtesting.starting_cash,
             equity=config.backtesting.starting_cash,
             peak_equity=config.backtesting.starting_cash,
         )
         self.deployed_candidate: StrategyCandidate | None = None
+        self.deployed_candidates: list[StrategyCandidate] = []
 
     @classmethod
     def from_config(cls, config: AppConfig) -> AutonomousResearchLoop:
@@ -71,6 +76,7 @@ class AutonomousResearchLoop:
 
         storage = ParquetDataLake(config.data.data_dir)
         collector = MarketDataCollector(
+            exchange_id=config.data.exchange_id,
             client=CCXTMarketDataClient(
                 exchange_id=config.data.exchange_id,
                 api_key=os.getenv(config.execution.api_key_env),
@@ -80,14 +86,25 @@ class AutonomousResearchLoop:
             storage=storage,
             symbols=config.data.symbols,
             trade_poll_interval_seconds=config.data.trade_poll_interval_seconds,
-            order_book_poll_interval_seconds=config.data.order_book_poll_interval_seconds,
+            order_book_poll_interval_seconds=(
+                config.data.orderbook_interval_seconds
+                or config.data.order_book_poll_interval_seconds
+            ),
             order_book_depth=config.data.order_book_depth,
             trade_fetch_limit=config.data.trade_fetch_limit,
+            max_trade_batches_per_cycle=config.data.max_trade_batches_per_cycle,
+            checkpoint_path=config.data.checkpoint_path,
+            resume_from_checkpoint=config.data.resume_from_checkpoint,
+            backfill_start=config.data.backfill_start,
         )
         dataset_builder = HistoricalDatasetBuilder()
-        feature_pipeline = FeaturePipeline(config.feature_engineering)
+        feature_pipeline = FeaturePipeline(
+            config.feature_engineering,
+            base_timeframe=config.data.ohlcv_timeframe,
+        )
         discovery_service = StrategyDiscoveryService(
             config=config.research,
+            validation_config=config.validation,
             vectorized_backtester=VectorizedBacktestEngine(config.backtesting),
             event_driven_backtester=EventDrivenBacktestEngine(config.backtesting),
         )
@@ -99,9 +116,17 @@ class AutonomousResearchLoop:
         )
 
         execution_service: ExecutionService | None = None
-        if config.execution.paper_trading:
-            execution_service = ExecutionService(PaperExecutionBroker(), risk_manager)
-        elif config.execution.enabled:
+        execution_mode = config.execution.mode.lower()
+        if execution_mode == "paper" or config.execution.paper_trading:
+            execution_service = ExecutionService(
+                PaperExecutionBroker(
+                    slippage_bps=config.execution.paper_slippage_bps,
+                    fee_rate=config.execution.paper_fee_rate,
+                    latency_ms=config.execution.paper_latency_ms,
+                ),
+                risk_manager,
+            )
+        elif execution_mode == "live" or config.execution.enabled:
             execution_service = ExecutionService(
                 CCXTExecutionBroker(
                     exchange_id=config.execution.exchange_id,
@@ -111,6 +136,7 @@ class AutonomousResearchLoop:
                 ),
                 risk_manager,
             )
+        ensemble_engine = StrategyEnsembleEngine(config.execution.ensemble_size)
 
         return cls(
             config=config,
@@ -122,6 +148,7 @@ class AutonomousResearchLoop:
             risk_manager=risk_manager,
             monitoring_service=monitoring_service,
             execution_service=execution_service,
+            ensemble_engine=ensemble_engine,
         )
 
     async def _collect_data(self) -> None:
@@ -156,71 +183,110 @@ class AutonomousResearchLoop:
         if self.execution_service is not None:
             await self.execution_service.broker.close()
 
-    def _load_features(self, symbol: str):
+    def _load_features(self, symbol: str) -> pd.DataFrame:
         """Load, aggregate, and feature-engineer market data for one symbol."""
 
         trades = self.storage.read_dataset("trades", self.config.data.exchange_id, symbol)
         if trades.empty:
             return trades
-        bars = self.dataset_builder.build_ohlcv_from_trades(
-            trades,
-            timeframe=self.config.data.ohlcv_timeframe,
-        )
         order_books = self.storage.read_dataset(
             "order_books",
             self.config.data.exchange_id,
             symbol,
         )
-        dataset = self.dataset_builder.attach_order_book_features(
-            bars,
+        timeframes = list(dict.fromkeys(
+            [self.config.data.ohlcv_timeframe, *self.config.feature_engineering.timeframes]
+        ))
+        datasets = self.dataset_builder.build_multi_resolution_datasets(
+            trades,
             order_books,
-            timeframe=self.config.data.ohlcv_timeframe,
+            timeframes=timeframes,
         )
-        return self.feature_pipeline.build(dataset)
+        return self.feature_pipeline.build(datasets)
 
-    async def _deploy_candidate(self, candidate: StrategyCandidate, features) -> None:
-        """Deploy the best candidate, safely defaulting to paper mode when configured."""
+    async def _deploy_ensemble(
+        self,
+        candidates: list[StrategyCandidate],
+        feature_frames: dict[str, pd.DataFrame],
+    ) -> None:
+        """Deploy the top ensemble of validated strategies."""
 
-        self.deployed_candidate = candidate
-        if self.execution_service is None or features.empty:
+        selected = self.ensemble_engine.select(candidates)
+        previous_ids = {
+            str(candidate.parameters.get("strategy_id", candidate.strategy_name))
+            for candidate in self.deployed_candidates
+        }
+        current_ids = {
+            str(candidate.parameters.get("strategy_id", candidate.strategy_name))
+            for candidate in selected
+        }
+        retired = sorted(previous_ids - current_ids)
+        if retired:
+            self.monitoring_service.record_event("strategies_retired", {"strategy_ids": retired})
+
+        self.deployed_candidates = selected
+        self.deployed_candidate = selected[0] if selected else None
+        if self.execution_service is None or not selected:
             return
-        strategy = get_strategy(candidate.strategy_name, candidate.parameters)
-        signal = strategy.generate_signals(features).iloc[-1]
-        if signal == SignalDirection.FLAT.value:
-            return
-        side = OrderSide.BUY if signal == SignalDirection.LONG.value else OrderSide.SELL
-        market_price = float(features["close"].iloc[-1])
-        leverage = float(candidate.parameters.get("leverage", 1.0))
-        target_fraction = min(
-            self.config.backtesting.position_size * leverage,
-            self.config.risk.max_position_size,
-        )
-        amount = (self.portfolio_state.equity * target_fraction) / market_price
-        request = OrderRequest(
-            symbol=candidate.symbol,
-            side=side,
-            amount=amount,
-            price=market_price,
-        )
-        await self.execution_service.place_order(request, market_price, self.portfolio_state)
-        LOGGER.info(
-            "strategy_deployed",
-            extra={
-                "symbol": candidate.symbol,
-                "strategy": candidate.strategy_name,
-                "parameters": candidate.parameters,
-                "signal": signal,
-                "amount": amount,
-            },
-        )
-        self.monitoring_service.record_event(
-            "strategy_deployed",
-            {
-                "symbol": candidate.symbol,
-                "strategy": candidate.strategy_name,
-                "amount": amount,
-            },
-        )
+
+        for symbol in sorted({candidate.symbol for candidate in selected}):
+            symbol_candidates = [candidate for candidate in selected if candidate.symbol == symbol]
+            features = feature_frames.get(symbol)
+            if features is None or features.empty:
+                continue
+            decision = self.ensemble_engine.aggregate_signal(symbol_candidates, features)
+            if decision.direction == SignalDirection.FLAT:
+                continue
+            side = (
+                OrderSide.BUY if decision.direction == SignalDirection.LONG else OrderSide.SELL
+            )
+            market_price = float(features["close"].iloc[-1])
+            realized_volatility = (
+                float(features["volatility"].iloc[-1]) if "volatility" in features else 0.0
+            )
+            avg_win_rate = sum(
+                candidate.backtest_result.metrics.win_rate for candidate in symbol_candidates
+            ) / len(symbol_candidates)
+            avg_profit_factor = sum(
+                candidate.backtest_result.metrics.profit_factor for candidate in symbol_candidates
+            ) / len(symbol_candidates)
+            base_fraction = self.config.backtesting.position_size * decision.confidence
+            target_fraction = self.risk_manager.recommended_position_fraction(
+                base_fraction=base_fraction,
+                realized_volatility=realized_volatility,
+                win_rate=avg_win_rate,
+                profit_factor=avg_profit_factor,
+            )
+            if target_fraction <= 0.0:
+                continue
+            amount = (self.portfolio_state.equity * target_fraction) / market_price
+            request = OrderRequest(
+                symbol=symbol,
+                side=side,
+                amount=amount,
+                price=market_price,
+            )
+            await self.execution_service.place_order(request, market_price, self.portfolio_state)
+            LOGGER.info(
+                "ensemble_deployed",
+                extra={
+                    "symbol": symbol,
+                    "members": decision.members,
+                    "direction": decision.direction.value,
+                    "confidence": decision.confidence,
+                    "amount": amount,
+                },
+            )
+            self.monitoring_service.record_event(
+                "ensemble_deployed",
+                {
+                    "symbol": symbol,
+                    "members": decision.members,
+                    "direction": decision.direction.value,
+                    "confidence": decision.confidence,
+                    "amount": amount,
+                },
+            )
 
     def _extract_top_features(
         self,
@@ -249,6 +315,18 @@ class AutonomousResearchLoop:
                         "volume_delta",
                         "microprice",
                         "spread",
+                        "order_book_slope",
+                        "liquidity_pressure",
+                        "vwap_distance",
+                    ]
+                )
+            if candidate.parameters.get("template") == "microstructure_reversal":
+                counts.update(
+                    [
+                        "orderbook_imbalance",
+                        "liquidity_pressure",
+                        "microprice",
+                        "order_book_slope",
                     ]
                 )
         return [feature_name for feature_name, _ in counts.most_common(limit)]
@@ -267,6 +345,9 @@ class AutonomousResearchLoop:
                 "trade_intensity",
                 "volume_delta",
                 "order_flow_imbalance",
+                "vwap_distance",
+                "order_book_slope",
+                "liquidity_pressure",
                 "liquidity_score",
             ]
             if column in features.columns
@@ -280,6 +361,21 @@ class AutonomousResearchLoop:
         """Run discovery without deployment."""
 
         return await self.run_cycle(emit_monitoring_only=True)
+
+    async def run_forever(
+        self,
+        max_cycles: int | None = None,
+        cycle_delay_seconds: int | None = None,
+        emit_monitoring_only: bool = False,
+    ) -> None:
+        """Run continuous research and deployment cycles."""
+
+        cycle = 0
+        delay = cycle_delay_seconds or self.config.monitoring.heartbeat_seconds
+        while max_cycles is None or cycle < max_cycles:
+            await self.run_cycle(emit_monitoring_only=emit_monitoring_only)
+            cycle += 1
+            await asyncio.sleep(delay)
 
     def backtest_saved_strategy(
         self,
@@ -333,9 +429,19 @@ class AutonomousResearchLoop:
                 )
 
         ranked_candidates = self.discovery_service.ranker.rank(all_candidates)
-        best_candidate = ranked_candidates[0] if ranked_candidates else None
-        if best_candidate and not emit_monitoring_only:
-            await self._deploy_candidate(best_candidate, feature_frames[best_candidate.symbol])
+        deployable_candidates = [
+            candidate
+            for candidate in ranked_candidates
+            if int(candidate.parameters.get("stat_validation_passed", 1)) == 1
+        ]
+        best_candidate = deployable_candidates[0] if deployable_candidates else (
+            ranked_candidates[0] if ranked_candidates else None
+        )
+        if deployable_candidates and not emit_monitoring_only:
+            await self._deploy_ensemble(deployable_candidates, feature_frames)
+        elif not deployable_candidates and not emit_monitoring_only:
+            self.deployed_candidates = []
+            self.deployed_candidate = None
 
         top_features = self._extract_top_features(ranked_candidates)
         feature_correlations = (
@@ -343,32 +449,53 @@ class AutonomousResearchLoop:
             if best_candidate is not None
             else {}
         )
+        equity_curve = best_candidate.backtest_result.equity_curve if best_candidate else []
+        drawdown_curve = []
+        if equity_curve:
+            equity_series = pd.Series(equity_curve)
+            drawdown_curve = (equity_series / equity_series.cummax() - 1.0).fillna(0.0).tolist()
         risk_snapshot = self.risk_manager.evaluate_portfolio(self.portfolio_state)
         monitoring_snapshot = self.monitoring_service.build_snapshot(
             portfolio_state=self.portfolio_state,
             risk_snapshot=risk_snapshot,
             datasets_ready=len(feature_frames),
             deployed_strategy=(
-                f"{self.deployed_candidate.strategy_name}:{self.deployed_candidate.symbol}"
-                if self.deployed_candidate
+                ",".join(
+                    f"{candidate.strategy_name}:{candidate.symbol}"
+                    for candidate in self.deployed_candidates
+                )
+                if self.deployed_candidates
                 else None
             ),
             number_of_strategies_tested=len(ranked_candidates),
             best_strategy_score=best_candidate.score if best_candidate else 0.0,
             top_features=top_features,
-            active_strategy=best_candidate.strategy_name if best_candidate else None,
+            active_strategy=(
+                ",".join(candidate.strategy_name for candidate in self.deployed_candidates)
+                if self.deployed_candidates
+                else None
+            ),
             feature_correlations=feature_correlations,
+            equity_curve=equity_curve,
+            drawdown_curve=drawdown_curve,
+            sharpe_ratio=(
+                best_candidate.backtest_result.metrics.sharpe_ratio if best_candidate else 0.0
+            ),
+            win_rate=best_candidate.backtest_result.metrics.win_rate if best_candidate else 0.0,
+            trade_count=len(best_candidate.backtest_result.trade_log) if best_candidate else 0,
         )
         self.monitoring_service.record_event(
             "research_cycle_completed",
             {
                 "candidate_count": len(ranked_candidates),
                 "best_strategy": best_candidate.strategy_name if best_candidate else None,
+                "ensemble_size": len(self.deployed_candidates),
             },
         )
         return {
             "best_candidate": best_candidate,
             "candidate_count": len(ranked_candidates),
             "top_candidates": ranked_candidates[: self.config.research.top_n_strategies],
+            "deployed_candidates": self.deployed_candidates,
             "monitoring": monitoring_snapshot,
         }
